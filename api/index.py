@@ -115,8 +115,8 @@ def get_flights(params):
     try:
         if flight_iata:
             results = fr_api.search(query=flight_iata, limit=limit * 2)
-            # Live flights are under the "live" key, not "flights"
-            candidates = results.get("live", [])
+            # "live" = currently airborne, "schedule" = upcoming/on-ground
+            candidates = results.get("live", []) + results.get("schedule", [])
 
             for item in candidates:
                 if len(formatted) >= limit:
