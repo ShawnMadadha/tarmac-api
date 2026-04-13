@@ -1,55 +1,77 @@
 from http.server import BaseHTTPRequestHandler
-import requests
+from FlightRadar24 import FlightRadar24API
+from datetime import datetime, timezone
 import json
-import os
 from urllib.parse import urlparse, parse_qs
 
 
-def get_delayed_flights(api_key, params):
-    """Fetch flights and filter to only delayed ones with enriched delay data."""
-    limit = params.get("limit", ["25"])[0]
+def unix_to_iso(ts):
+    if not ts:
+        return None
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+
+
+def calc_delay(scheduled_ts, other_ts):
+    if not scheduled_ts or not other_ts:
+        return None
+    diff = int((other_ts - scheduled_ts) / 60)
+    return diff if diff > 0 else None
+
+
+def get_delayed_flights(params):
     dep_iata = params.get("dep_iata", [None])[0]
     arr_iata = params.get("arr_iata", [None])[0]
+    limit = int(params.get("limit", ["25"])[0])
 
-    url = f"http://api.aviationstack.com/v1/flights?access_key={api_key}&limit={limit}&offset=0"
-
-    if dep_iata:
-        url += f"&dep_iata={dep_iata}"
-    if arr_iata:
-        url += f"&arr_iata={arr_iata}"
+    fr_api = FlightRadar24API()
+    delayed = []
 
     try:
-        response = requests.get(url, timeout=15)
-        response.raise_for_status()
-        data = response.json()
+        flights = fr_api.get_flights()
 
-        if "error" in data:
-            return {
-                "success": False,
-                "error": data["error"].get("message", "Unknown API error"),
-            }
-
-        flights = data.get("data", [])
-        delayed = []
-
+        candidates = []
         for f in flights:
-            dep = f.get("departure", {})
-            arr = f.get("arrival", {})
-            dep_delay = dep.get("delay")
-            arr_delay = arr.get("delay")
+            if dep_iata and getattr(f, "origin_airport_iata", None) != dep_iata:
+                continue
+            if arr_iata and getattr(f, "destination_airport_iata", None) != arr_iata:
+                continue
+            candidates.append(f)
 
-            # Only include flights with actual delays
-            if (dep_delay and int(dep_delay) > 0) or (
-                arr_delay and int(arr_delay) > 0
-            ):
-                flight_info = f.get("flight", {})
-                airline_info = f.get("airline", {})
+        for f in candidates:
+            if len(delayed) >= limit:
+                break
+            try:
+                details = fr_api.get_flight_details(f)
 
-                dep_delay_min = int(dep_delay) if dep_delay else 0
-                arr_delay_min = int(arr_delay) if arr_delay else 0
+                ident = details.get("identification") or {}
+                airline = details.get("airline") or {}
+                airport = details.get("airport") or {}
+                time = details.get("time") or {}
+                status = details.get("status") or {}
+
+                origin = airport.get("origin") or {}
+                dest = airport.get("destination") or {}
+                sched = time.get("scheduled") or {}
+                real = time.get("real") or {}
+                estimated = time.get("estimated") or {}
+
+                dep_sched_ts = sched.get("departure")
+                dep_real_ts = real.get("departure")
+                dep_est_ts = estimated.get("departure")
+                arr_sched_ts = sched.get("arrival")
+                arr_real_ts = real.get("arrival")
+                arr_est_ts = estimated.get("arrival") or (time.get("other") or {}).get("eta")
+
+                dep_delay = calc_delay(dep_sched_ts, dep_real_ts or dep_est_ts)
+                arr_delay = calc_delay(arr_sched_ts, arr_real_ts or arr_est_ts)
+
+                if not dep_delay and not arr_delay:
+                    continue
+
+                dep_delay_min = dep_delay or 0
+                arr_delay_min = arr_delay or 0
                 max_delay = max(dep_delay_min, arr_delay_min)
 
-                # Categorize delay severity
                 if max_delay >= 180:
                     severity = "severe"
                 elif max_delay >= 60:
@@ -59,44 +81,44 @@ def get_delayed_flights(api_key, params):
                 else:
                     severity = "minor"
 
-                delayed.append(
-                    {
-                        "flight_iata": flight_info.get("iata", "N/A"),
-                        "airline": airline_info.get("name", "N/A"),
-                        "status": f.get("flight_status", "unknown"),
-                        "delay": {
-                            "departure_minutes": dep_delay_min,
-                            "arrival_minutes": arr_delay_min,
-                            "max_minutes": max_delay,
-                            "severity": severity,
-                        },
-                        "departure": {
-                            "airport": dep.get("airport", "N/A"),
-                            "iata": dep.get("iata", "N/A"),
-                            "terminal": dep.get("terminal"),
-                            "gate": dep.get("gate"),
-                            "scheduled": dep.get("scheduled"),
-                            "estimated": dep.get("estimated"),
-                            "actual": dep.get("actual"),
-                        },
-                        "arrival": {
-                            "airport": arr.get("airport", "N/A"),
-                            "iata": arr.get("iata", "N/A"),
-                            "scheduled": arr.get("scheduled"),
-                            "estimated": arr.get("estimated"),
-                        },
-                    }
-                )
+                num = ident.get("number") or {}
+                origin_code = origin.get("code") or {}
+                dest_code = dest.get("code") or {}
 
-        # Sort by most delayed first
+                delayed.append({
+                    "flight_iata": num.get("default") or "N/A",
+                    "airline": airline.get("name") or "N/A",
+                    "status": status.get("text") or "unknown",
+                    "delay": {
+                        "departure_minutes": dep_delay_min,
+                        "arrival_minutes": arr_delay_min,
+                        "max_minutes": max_delay,
+                        "severity": severity,
+                    },
+                    "departure": {
+                        "airport": origin.get("name") or "N/A",
+                        "iata": origin_code.get("iata") or "N/A",
+                        "terminal": None,
+                        "gate": None,
+                        "scheduled": unix_to_iso(dep_sched_ts),
+                        "estimated": unix_to_iso(dep_est_ts),
+                        "actual": unix_to_iso(dep_real_ts),
+                    },
+                    "arrival": {
+                        "airport": dest.get("name") or "N/A",
+                        "iata": dest_code.get("iata") or "N/A",
+                        "scheduled": unix_to_iso(arr_sched_ts),
+                        "estimated": unix_to_iso(arr_est_ts),
+                    },
+                })
+            except Exception:
+                continue
+
         delayed.sort(key=lambda x: x["delay"]["max_minutes"], reverse=True)
-
         return {"success": True, "count": len(delayed), "delayed_flights": delayed}
 
-    except requests.exceptions.RequestException as e:
-        return {"success": False, "error": f"Request failed: {str(e)}"}
     except Exception as e:
-        return {"success": False, "error": f"Unexpected error: {str(e)}"}
+        return {"success": False, "error": str(e)}
 
 
 class handler(BaseHTTPRequestHandler):
@@ -107,24 +129,14 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.end_headers()
 
-        api_key = os.environ.get("AVIATION_API_KEY", "")
-
-        if not api_key:
-            result = {
-                "success": False,
-                "error": "AVIATION_API_KEY not configured.",
-            }
-        else:
-            parsed = urlparse(self.path)
-            params = parse_qs(parsed.query)
-            result = get_delayed_flights(api_key, params)
+        parsed = urlparse(self.path)
+        params = parse_qs(parsed.query)
+        result = get_delayed_flights(params)
 
         self.wfile.write(json.dumps(result, indent=2).encode("utf-8"))
-        return
 
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
         self.end_headers()
-        return

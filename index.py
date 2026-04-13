@@ -1,98 +1,131 @@
 from http.server import BaseHTTPRequestHandler
-import requests
+from FlightRadar24 import FlightRadar24API
+from datetime import datetime, timezone
 import json
-import os
 from urllib.parse import urlparse, parse_qs
 
 
-def get_flights(api_key, params):
-    """Fetch flights from AviationStack API and return structured JSON."""
-    limit = params.get("limit", ["10"])[0]
+def unix_to_iso(ts):
+    if not ts:
+        return None
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+
+
+def calc_delay(scheduled_ts, other_ts):
+    if not scheduled_ts or not other_ts:
+        return None
+    diff = int((other_ts - scheduled_ts) / 60)
+    return diff if diff > 0 else None
+
+
+def format_flight(details):
+    ident = details.get("identification") or {}
+    airline = details.get("airline") or {}
+    airport = details.get("airport") or {}
+    time = details.get("time") or {}
+    status = details.get("status") or {}
+
+    origin = airport.get("origin") or {}
+    dest = airport.get("destination") or {}
+
+    sched = time.get("scheduled") or {}
+    real = time.get("real") or {}
+    estimated = time.get("estimated") or {}
+
+    dep_sched_ts = sched.get("departure")
+    dep_real_ts = real.get("departure")
+    dep_est_ts = estimated.get("departure")
+    arr_sched_ts = sched.get("arrival")
+    arr_real_ts = real.get("arrival")
+    arr_est_ts = estimated.get("arrival") or (time.get("other") or {}).get("eta")
+
+    dep_delay = calc_delay(dep_sched_ts, dep_real_ts or dep_est_ts)
+    arr_delay = calc_delay(arr_sched_ts, arr_real_ts or arr_est_ts)
+
+    num = ident.get("number") or {}
+    origin_pos = origin.get("position") or {}
+    dest_pos = dest.get("position") or {}
+    origin_code = origin.get("code") or {}
+    dest_code = dest.get("code") or {}
+
+    return {
+        "flight_iata": num.get("default") or "N/A",
+        "flight_icao": ident.get("callsign") or "N/A",
+        "airline": airline.get("name") or "N/A",
+        "status": status.get("text") or "unknown",
+        "departure": {
+            "airport": origin.get("name") or "N/A",
+            "iata": origin_code.get("iata") or "N/A",
+            "terminal": None,
+            "gate": None,
+            "scheduled": unix_to_iso(dep_sched_ts),
+            "estimated": unix_to_iso(dep_est_ts),
+            "actual": unix_to_iso(dep_real_ts),
+            "delay_minutes": dep_delay,
+            "latitude": origin_pos.get("latitude"),
+            "longitude": origin_pos.get("longitude"),
+        },
+        "arrival": {
+            "airport": dest.get("name") or "N/A",
+            "iata": dest_code.get("iata") or "N/A",
+            "terminal": None,
+            "gate": None,
+            "scheduled": unix_to_iso(arr_sched_ts),
+            "estimated": unix_to_iso(arr_est_ts),
+            "actual": unix_to_iso(arr_real_ts),
+            "delay_minutes": arr_delay,
+            "latitude": dest_pos.get("latitude"),
+            "longitude": dest_pos.get("longitude"),
+        },
+        "is_delayed": bool(dep_delay and dep_delay > 0) or bool(arr_delay and arr_delay > 0),
+    }
+
+
+def get_flights(params):
     flight_iata = params.get("flight", [None])[0]
     dep_iata = params.get("dep_iata", [None])[0]
     arr_iata = params.get("arr_iata", [None])[0]
-    airline = params.get("airline", [None])[0]
-    status = params.get("status", [None])[0]
+    limit = int(params.get("limit", ["10"])[0])
 
-    url = f"http://api.aviationstack.com/v1/flights?access_key={api_key}&limit={limit}&offset=0"
-
-    # Append optional filters
-    if flight_iata:
-        url += f"&flight_iata={flight_iata}"
-    if dep_iata:
-        url += f"&dep_iata={dep_iata}"
-    if arr_iata:
-        url += f"&arr_iata={arr_iata}"
-    if airline:
-        url += f"&airline_name={airline}"
-    if status:
-        url += f"&flight_status={status}"
+    fr_api = FlightRadar24API()
+    formatted = []
 
     try:
-        response = requests.get(url, timeout=15)
-        response.raise_for_status()
-        data = response.json()
+        if flight_iata:
+            results = fr_api.search(query=flight_iata, limit=limit * 2)
+            candidates = results.get("flights", [])
 
-        if "error" in data:
-            return {
-                "success": False,
-                "error": data["error"].get("message", "Unknown API error"),
-            }
+            for item in candidates:
+                if len(formatted) >= limit:
+                    break
+                flight_id = item.get("id")
+                if not flight_id:
+                    continue
+                try:
+                    details = fr_api.get_flight_details(flight_id)
+                    formatted.append(format_flight(details))
+                except Exception:
+                    continue
+        else:
+            flights = fr_api.get_flights()
 
-        flights = data.get("data", [])
-        if not flights:
-            return {"success": True, "count": 0, "flights": []}
-
-        formatted = []
-        for f in flights:
-            dep = f.get("departure", {})
-            arr = f.get("arrival", {})
-            flight_info = f.get("flight", {})
-            airline_info = f.get("airline", {})
-
-            # Calculate delay info
-            dep_delay = dep.get("delay")
-            arr_delay = arr.get("delay")
-
-            formatted.append(
-                {
-                    "flight_iata": flight_info.get("iata", "N/A"),
-                    "flight_icao": flight_info.get("icao", "N/A"),
-                    "airline": airline_info.get("name", "N/A"),
-                    "status": f.get("flight_status", "unknown"),
-                    "departure": {
-                        "airport": dep.get("airport", "N/A"),
-                        "iata": dep.get("iata", "N/A"),
-                        "terminal": dep.get("terminal"),
-                        "gate": dep.get("gate"),
-                        "scheduled": dep.get("scheduled"),
-                        "estimated": dep.get("estimated"),
-                        "actual": dep.get("actual"),
-                        "delay_minutes": int(dep_delay) if dep_delay else None,
-                    },
-                    "arrival": {
-                        "airport": arr.get("airport", "N/A"),
-                        "iata": arr.get("iata", "N/A"),
-                        "terminal": arr.get("terminal"),
-                        "gate": arr.get("gate"),
-                        "scheduled": arr.get("scheduled"),
-                        "estimated": arr.get("estimated"),
-                        "actual": arr.get("actual"),
-                        "delay_minutes": int(arr_delay) if arr_delay else None,
-                    },
-                    "is_delayed": (dep_delay is not None and int(dep_delay) > 0)
-                    or (arr_delay is not None and int(arr_delay) > 0),
-                }
-            )
+            for f in flights:
+                if len(formatted) >= limit:
+                    break
+                if dep_iata and getattr(f, "origin_airport_iata", None) != dep_iata:
+                    continue
+                if arr_iata and getattr(f, "destination_airport_iata", None) != arr_iata:
+                    continue
+                try:
+                    details = fr_api.get_flight_details(f)
+                    formatted.append(format_flight(details))
+                except Exception:
+                    continue
 
         return {"success": True, "count": len(formatted), "flights": formatted}
 
-    except requests.exceptions.Timeout:
-        return {"success": False, "error": "Request timed out"}
-    except requests.exceptions.RequestException as e:
-        return {"success": False, "error": f"Request failed: {str(e)}"}
     except Exception as e:
-        return {"success": False, "error": f"Unexpected error: {str(e)}"}
+        return {"success": False, "error": str(e)}
 
 
 class handler(BaseHTTPRequestHandler):
@@ -104,26 +137,15 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.end_headers()
 
-        api_key = os.environ.get("AVIATION_API_KEY", "")
-
-        if not api_key:
-            result = {
-                "success": False,
-                "error": "AVIATION_API_KEY not configured in Vercel environment variables.",
-            }
-        else:
-            parsed = urlparse(self.path)
-            params = parse_qs(parsed.query)
-            result = get_flights(api_key, params)
+        parsed = urlparse(self.path)
+        params = parse_qs(parsed.query)
+        result = get_flights(params)
 
         self.wfile.write(json.dumps(result, indent=2).encode("utf-8"))
-        return
 
     def do_OPTIONS(self):
-        """Handle CORS preflight."""
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
-        return
