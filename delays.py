@@ -1,14 +1,16 @@
 from http.server import BaseHTTPRequestHandler
 from FlightRadar24 import FlightRadar24API
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import json
 from urllib.parse import urlparse, parse_qs
 
 
-def unix_to_iso(ts):
+def unix_to_iso(ts, tz_offset_seconds=0):
     if not ts:
         return None
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    naive = datetime.utcfromtimestamp(ts)
+    tz = timezone(timedelta(seconds=tz_offset_seconds))
+    return naive.replace(tzinfo=tz).isoformat(timespec="seconds")
 
 
 def calc_delay(scheduled_ts, other_ts):
@@ -62,6 +64,9 @@ def get_delayed_flights(params):
                 arr_real_ts = real.get("arrival")
                 arr_est_ts = estimated.get("arrival") or (time.get("other") or {}).get("eta")
 
+                dep_tz = (origin.get("timezone") or {}).get("offset") or 0
+                arr_tz = (dest.get("timezone") or {}).get("offset") or 0
+
                 dep_delay = calc_delay(dep_sched_ts, dep_real_ts or dep_est_ts)
                 arr_delay = calc_delay(arr_sched_ts, arr_real_ts or arr_est_ts)
 
@@ -97,18 +102,18 @@ def get_delayed_flights(params):
                     },
                     "departure": {
                         "airport": origin.get("name") or "N/A",
-                        "iata": origin_code.get("iata") or "N/A",
+                        "iata": origin_code.get("iata") or origin_code.get("icao") or "N/A",
                         "terminal": None,
                         "gate": None,
-                        "scheduled": unix_to_iso(dep_sched_ts),
-                        "estimated": unix_to_iso(dep_est_ts),
-                        "actual": unix_to_iso(dep_real_ts),
+                        "scheduled": unix_to_iso(dep_sched_ts, dep_tz),
+                        "estimated": unix_to_iso(dep_est_ts, dep_tz),
+                        "actual": unix_to_iso(dep_real_ts, dep_tz),
                     },
                     "arrival": {
                         "airport": dest.get("name") or "N/A",
-                        "iata": dest_code.get("iata") or "N/A",
-                        "scheduled": unix_to_iso(arr_sched_ts),
-                        "estimated": unix_to_iso(arr_est_ts),
+                        "iata": dest_code.get("iata") or dest_code.get("icao") or "N/A",
+                        "scheduled": unix_to_iso(arr_sched_ts, arr_tz),
+                        "estimated": unix_to_iso(arr_est_ts, arr_tz),
                     },
                 })
             except Exception:

@@ -1,15 +1,24 @@
 from http.server import BaseHTTPRequestHandler
 from FlightRadar24 import FlightRadar24API
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import json
 import types
 from urllib.parse import urlparse, parse_qs
 
 
-def unix_to_iso(ts):
+def unix_to_iso(ts, tz_offset_seconds=0):
+    """Convert a FlightRadar24 Unix timestamp to ISO 8601.
+
+    FR24 encodes scheduled times as local airport time but labels them as UTC
+    (i.e. the numeric value is the local time, not UTC). We reconstruct the
+    correct wall-clock time by attaching the airport's UTC offset so Swift's
+    ISO8601DateFormatter shows the right local departure/arrival time.
+    """
     if not ts:
         return None
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    naive = datetime.utcfromtimestamp(ts)
+    tz = timezone(timedelta(seconds=tz_offset_seconds))
+    return naive.replace(tzinfo=tz).isoformat(timespec="seconds")
 
 
 def calc_delay(scheduled_ts, other_ts):
@@ -40,6 +49,9 @@ def format_flight(details):
     arr_real_ts = real.get("arrival")
     arr_est_ts = estimated.get("arrival") or (time.get("other") or {}).get("eta")
 
+    dep_tz = (origin.get("timezone") or {}).get("offset") or 0
+    arr_tz = (dest.get("timezone") or {}).get("offset") or 0
+
     dep_delay = calc_delay(dep_sched_ts, dep_real_ts or dep_est_ts)
     arr_delay = calc_delay(arr_sched_ts, arr_real_ts or arr_est_ts)
 
@@ -56,24 +68,24 @@ def format_flight(details):
         "status": status.get("text") or "unknown",
         "departure": {
             "airport": origin.get("name") or "N/A",
-            "iata": origin_code.get("iata") or "N/A",
+            "iata": origin_code.get("iata") or origin_code.get("icao") or "N/A",
             "terminal": None,
             "gate": None,
-            "scheduled": unix_to_iso(dep_sched_ts),
-            "estimated": unix_to_iso(dep_est_ts),
-            "actual": unix_to_iso(dep_real_ts),
+            "scheduled": unix_to_iso(dep_sched_ts, dep_tz),
+            "estimated": unix_to_iso(dep_est_ts, dep_tz),
+            "actual": unix_to_iso(dep_real_ts, dep_tz),
             "delay_minutes": dep_delay,
             "latitude": origin_pos.get("latitude"),
             "longitude": origin_pos.get("longitude"),
         },
         "arrival": {
             "airport": dest.get("name") or "N/A",
-            "iata": dest_code.get("iata") or "N/A",
+            "iata": dest_code.get("iata") or dest_code.get("icao") or "N/A",
             "terminal": None,
             "gate": None,
-            "scheduled": unix_to_iso(arr_sched_ts),
-            "estimated": unix_to_iso(arr_est_ts),
-            "actual": unix_to_iso(arr_real_ts),
+            "scheduled": unix_to_iso(arr_sched_ts, arr_tz),
+            "estimated": unix_to_iso(arr_est_ts, arr_tz),
+            "actual": unix_to_iso(arr_real_ts, arr_tz),
             "delay_minutes": arr_delay,
             "latitude": dest_pos.get("latitude"),
             "longitude": dest_pos.get("longitude"),
