@@ -2,6 +2,7 @@ from http.server import BaseHTTPRequestHandler
 from FlightRadar24 import FlightRadar24API
 from datetime import datetime, timezone
 import json
+import types
 from urllib.parse import urlparse, parse_qs
 
 
@@ -93,7 +94,8 @@ def get_flights(params):
     try:
         if flight_iata:
             results = fr_api.search(query=flight_iata, limit=limit * 2)
-            candidates = results.get("flights", [])
+            # Live flights are under the "live" key, not "flights"
+            candidates = results.get("live", [])
 
             for item in candidates:
                 if len(formatted) >= limit:
@@ -102,7 +104,9 @@ def get_flights(params):
                 if not flight_id:
                     continue
                 try:
-                    details = fr_api.get_flight_details(flight_id)
+                    # get_flight_details() needs an object with a .id attribute
+                    ref = types.SimpleNamespace(id=flight_id)
+                    details = fr_api.get_flight_details(ref)
                     formatted.append(format_flight(details))
                 except Exception:
                     continue
