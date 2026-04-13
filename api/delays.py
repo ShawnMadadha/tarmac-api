@@ -2,6 +2,7 @@ from http.server import BaseHTTPRequestHandler
 import requests
 import json
 import os
+from datetime import datetime, timezone
 from urllib.parse import urlparse, parse_qs
 
 
@@ -10,8 +11,9 @@ def get_delayed_flights(api_key, params):
     limit = params.get("limit", ["25"])[0]
     dep_iata = params.get("dep_iata", [None])[0]
     arr_iata = params.get("arr_iata", [None])[0]
+    flight_date = params.get("date", [datetime.now(timezone.utc).strftime("%Y-%m-%d")])[0]
 
-    url = f"http://api.aviationstack.com/v1/flights?access_key={api_key}&limit={limit}&offset=0"
+    url = f"http://api.aviationstack.com/v1/flights?access_key={api_key}&limit={limit}&offset=0&flight_date={flight_date}"
 
     if dep_iata:
         url += f"&dep_iata={dep_iata}"

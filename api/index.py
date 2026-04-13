@@ -2,6 +2,7 @@ from http.server import BaseHTTPRequestHandler
 import requests
 import json
 import os
+from datetime import datetime, timezone
 from urllib.parse import urlparse, parse_qs
 
 
@@ -13,8 +14,9 @@ def get_flights(api_key, params):
     arr_iata = params.get("arr_iata", [None])[0]
     airline = params.get("airline", [None])[0]
     status = params.get("status", [None])[0]
+    flight_date = params.get("date", [datetime.now(timezone.utc).strftime("%Y-%m-%d")])[0]
 
-    url = f"http://api.aviationstack.com/v1/flights?access_key={api_key}&limit={limit}&offset=0"
+    url = f"http://api.aviationstack.com/v1/flights?access_key={api_key}&limit={limit}&offset=0&flight_date={flight_date}"
 
     # Append optional filters
     if flight_iata:

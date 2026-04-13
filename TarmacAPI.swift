@@ -90,8 +90,7 @@ struct DelayInfo: Codable {
 
 class TarmacAPI: ObservableObject {
     
-    // ⚠️ Replace with your actual Vercel deployment URL
-    static let baseURL = "https://YOUR-PROJECT.vercel.app"
+    static let baseURL = "https://tarmac-api.vercel.app"
     
     @Published var flights: [Flight] = []
     @Published var delayedFlights: [DelayedFlight] = []
