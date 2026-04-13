@@ -1,9 +1,15 @@
 from http.server import BaseHTTPRequestHandler
-from FlightRadar24 import FlightRadar24API
 from datetime import datetime, timezone, timedelta
 import json
 import types
 from urllib.parse import urlparse, parse_qs
+
+try:
+    from FlightRadar24 import FlightRadar24API
+    IMPORT_ERROR = None
+except Exception as e:
+    FlightRadar24API = None
+    IMPORT_ERROR = str(e)
 
 
 def unix_to_iso(ts, tz_offset_seconds=0):
@@ -95,6 +101,9 @@ def format_flight(details):
 
 
 def get_flights(params):
+    if IMPORT_ERROR:
+        return {"success": False, "error": f"Import failed: {IMPORT_ERROR}"}
+
     flight_iata = params.get("flight", [None])[0]
     dep_iata = params.get("dep_iata", [None])[0]
     arr_iata = params.get("arr_iata", [None])[0]
