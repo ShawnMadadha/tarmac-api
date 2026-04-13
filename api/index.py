@@ -66,6 +66,8 @@ def format_flight(details):
     dest_pos = dest.get("position") or {}
     origin_code = origin.get("code") or {}
     dest_code = dest.get("code") or {}
+    origin_info = origin.get("info") or {}
+    dest_info = dest.get("info") or {}
 
     return {
         "flight_iata": num.get("default") or "N/A",
@@ -75,8 +77,8 @@ def format_flight(details):
         "departure": {
             "airport": origin.get("name") or "N/A",
             "iata": origin_code.get("iata") or origin_code.get("icao") or "N/A",
-            "terminal": None,
-            "gate": None,
+            "terminal": origin_info.get("terminal"),
+            "gate": origin_info.get("gate"),
             "scheduled": unix_to_iso(dep_sched_ts, dep_tz),
             "estimated": unix_to_iso(dep_est_ts, dep_tz),
             "actual": unix_to_iso(dep_real_ts, dep_tz),
@@ -87,8 +89,8 @@ def format_flight(details):
         "arrival": {
             "airport": dest.get("name") or "N/A",
             "iata": dest_code.get("iata") or dest_code.get("icao") or "N/A",
-            "terminal": None,
-            "gate": None,
+            "terminal": dest_info.get("terminal"),
+            "gate": dest_info.get("gate"),
             "scheduled": unix_to_iso(arr_sched_ts, arr_tz),
             "estimated": unix_to_iso(arr_est_ts, arr_tz),
             "actual": unix_to_iso(arr_real_ts, arr_tz),
@@ -114,9 +116,20 @@ def get_flights(params):
 
     try:
         if flight_iata:
-            results = fr_api.search(query=flight_iata, limit=limit * 2)
+            needle = flight_iata.strip().upper().replace(" ", "")
+            results = fr_api.search(query=flight_iata, limit=limit * 4)
             # "live" = currently airborne, "schedule" = upcoming/on-ground
             candidates = results.get("live", []) + results.get("schedule", [])
+
+            # Filter to exact flight number matches only — search()
+            # returns prefix matches (e.g. "AA123" also returns AA1234).
+            exact = [
+                c for c in candidates
+                if (c.get("detail", {}).get("flight") or "").upper().replace(" ", "") == needle
+            ]
+            # Fall back to all candidates only if no exact match found
+            if exact:
+                candidates = exact
 
             for item in candidates:
                 if len(formatted) >= limit:
