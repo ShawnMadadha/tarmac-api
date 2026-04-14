@@ -1,6 +1,7 @@
 from http.server import BaseHTTPRequestHandler
 from datetime import datetime, timezone, timedelta
 import json
+import re
 import types
 from urllib.parse import urlparse, parse_qs
 
@@ -81,10 +82,24 @@ def format_flight(details):
     origin_info = origin.get("info") or {}
     dest_info = dest.get("info") or {}
 
+    airline_code = (airline.get("code") or {})
+    airline_iata = airline_code.get("iata") or "N/A"
+    flight_num = num.get("default") or "N/A"
+
+    # Extract the numeric part from "DL1" -> "1" for display like "Delta Air Lines 1"
+    flight_number_only = ""
+    if flight_num != "N/A":
+        m = re.search(r"\d+", flight_num)
+        if m:
+            flight_number_only = m.group()
+
     return {
-        "flight_iata": num.get("default") or "N/A",
+        "flight_iata": flight_num,
         "flight_icao": ident.get("callsign") or "N/A",
         "airline": airline.get("name") or "N/A",
+        "airline_iata": airline_iata,
+        "airline_logo": f"https://images.kiwi.com/airlines/64/{airline_iata}.png" if airline_iata != "N/A" else None,
+        "flight_display": f"{airline.get('name', 'N/A')} {flight_number_only}" if flight_number_only else flight_num,
         "status": status.get("text") or "unknown",
         "departure": {
             "airport": origin.get("name") or "N/A",
