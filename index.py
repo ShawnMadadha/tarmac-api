@@ -47,6 +47,77 @@ def calc_delay(scheduled_ts, other_ts):
     return diff if diff > 0 else None
 
 
+def is_hex_id(flight_id):
+    """Check if a flight ID is a hex tracker ID (works with get_flight_details)
+    vs a flight number like 'DL1' (doesn't work)."""
+    try:
+        int(flight_id, 16)
+        return len(flight_id) >= 6
+    except (ValueError, TypeError):
+        return False
+
+
+def format_search_item(item):
+    """Build a minimal flight entry from search result data when
+    get_flight_details() can't be used (scheduled flights without hex IDs)."""
+    detail = item.get("detail") or {}
+    flight_num = detail.get("flight") or "N/A"
+    callsign = detail.get("callsign") or "N/A"
+    operator_name = detail.get("operator") or "N/A"
+    logo = detail.get("logo")
+    schd_from = detail.get("schd_from") or "N/A"
+    schd_to = detail.get("schd_to") or "N/A"
+
+    # Extract airline IATA from flight number
+    airline_iata = None
+    if flight_num != "N/A":
+        m = re.match(r"^([A-Z]{2})", flight_num)
+        if m:
+            airline_iata = m.group(1)
+    airline_iata = airline_iata or "N/A"
+
+    flight_number_only = ""
+    if flight_num != "N/A":
+        m = re.search(r"\d+", flight_num)
+        if m:
+            flight_number_only = m.group()
+
+    return {
+        "flight_iata": flight_num,
+        "flight_icao": callsign,
+        "airline": operator_name,
+        "airline_iata": airline_iata,
+        "airline_logo": logo or (f"https://images.kiwi.com/airlines/64/{airline_iata}.png" if airline_iata != "N/A" else None),
+        "flight_display": f"{operator_name} {flight_number_only}" if flight_number_only and operator_name != "N/A" else flight_num,
+        "status": "Scheduled",
+        "departure": {
+            "airport": schd_from,
+            "iata": schd_from,
+            "terminal": None,
+            "gate": None,
+            "scheduled": None,
+            "estimated": None,
+            "actual": None,
+            "delay_minutes": None,
+            "latitude": None,
+            "longitude": None,
+        },
+        "arrival": {
+            "airport": schd_to,
+            "iata": schd_to,
+            "terminal": None,
+            "gate": None,
+            "scheduled": None,
+            "estimated": None,
+            "actual": None,
+            "delay_minutes": None,
+            "latitude": None,
+            "longitude": None,
+        },
+        "is_delayed": False,
+    }
+
+
 def format_flight(details):
     ident = details.get("identification") or {}
     airline = details.get("airline") or {}
@@ -147,7 +218,6 @@ def get_flights(params):
 
     fr_api = FlightRadar24API()
     formatted = []
-    debug_errors = []
 
     try:
         if flight_iata:
@@ -156,15 +226,31 @@ def get_flights(params):
             # "live" = currently airborne, "schedule" = upcoming/on-ground
             candidates = results.get("live", []) + results.get("schedule", [])
 
-            # Filter to exact flight number matches only — search()
-            # returns prefix matches (e.g. "AA123" also returns AA1234).
-            exact = [
-                c for c in candidates
+            # Separate live (hex ID, have full details) from schedule entries
+            live_candidates = [c for c in candidates if is_hex_id(c.get("id", ""))]
+            sched_candidates = [c for c in candidates if not is_hex_id(c.get("id", ""))]
+
+            # Among live results, prefer exact flight number matches
+            exact_live = [
+                c for c in live_candidates
                 if (c.get("detail", {}).get("flight") or "").upper().replace(" ", "") == needle
             ]
-            # Fall back to all candidates only if no exact match found
-            if exact:
-                candidates = exact
+
+            # Among schedule results, prefer exact matches
+            exact_sched = [
+                c for c in sched_candidates
+                if (c.get("detail", {}).get("flight") or "").upper().replace(" ", "") == needle
+            ]
+
+            # Priority: exact live > all live > exact schedule > all schedule
+            if exact_live:
+                candidates = exact_live
+            elif live_candidates:
+                candidates = live_candidates
+            elif exact_sched:
+                candidates = exact_sched
+            else:
+                candidates = sched_candidates
 
             for item in candidates:
                 if len(formatted) >= limit:
@@ -172,18 +258,27 @@ def get_flights(params):
                 flight_id = item.get("id")
                 if not flight_id:
                     continue
+
+                # Schedule entries have non-hex IDs (e.g. "DL1") that
+                # can't be used with get_flight_details(). Build a
+                # minimal entry from the search data instead.
+                if not is_hex_id(flight_id):
+                    entry = format_search_item(item)
+                    if entry.get("flight_iata", "N/A") != "N/A":
+                        formatted.append(entry)
+                    continue
+
                 try:
-                    # get_flight_details() needs an object with a .id attribute
                     ref = types.SimpleNamespace(id=flight_id)
                     details = fr_api.get_flight_details(ref)
+                    if not isinstance(details, dict) or not details:
+                        continue
                     entry = format_flight(details)
-                    # Skip entries where details were too incomplete to be useful
+                    # Skip entries where details were too incomplete
                     if entry.get("flight_iata", "N/A") == "N/A" and entry.get("departure", {}).get("iata", "N/A") == "N/A":
-                        debug_errors.append(f"skipped-na:{flight_id}")
                         continue
                     formatted.append(entry)
-                except Exception as ex:
-                    debug_errors.append(f"{flight_id}:{type(ex).__name__}:{str(ex)[:200]}")
+                except Exception:
                     continue
         else:
             flights = fr_api.get_flights()
@@ -201,11 +296,7 @@ def get_flights(params):
                 except Exception:
                     continue
 
-        result = {"success": True, "count": len(formatted), "flights": formatted}
-        if debug_errors:
-            result["_debug"] = debug_errors
-            result["_candidates"] = len(candidates) if flight_iata else 0
-        return result
+        return {"success": True, "count": len(formatted), "flights": formatted}
 
     except Exception as e:
         return {"success": False, "error": str(e)}
