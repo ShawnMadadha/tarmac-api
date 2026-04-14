@@ -147,6 +147,7 @@ def get_flights(params):
 
     fr_api = FlightRadar24API()
     formatted = []
+    debug_errors = []
 
     try:
         if flight_iata:
@@ -178,9 +179,11 @@ def get_flights(params):
                     entry = format_flight(details)
                     # Skip entries where details were too incomplete to be useful
                     if entry.get("flight_iata", "N/A") == "N/A" and entry.get("departure", {}).get("iata", "N/A") == "N/A":
+                        debug_errors.append(f"skipped-na:{flight_id}")
                         continue
                     formatted.append(entry)
-                except Exception:
+                except Exception as ex:
+                    debug_errors.append(f"{flight_id}:{type(ex).__name__}:{str(ex)[:200]}")
                     continue
         else:
             flights = fr_api.get_flights()
@@ -198,7 +201,11 @@ def get_flights(params):
                 except Exception:
                     continue
 
-        return {"success": True, "count": len(formatted), "flights": formatted}
+        result = {"success": True, "count": len(formatted), "flights": formatted}
+        if debug_errors:
+            result["_debug"] = debug_errors
+            result["_candidates"] = len(candidates) if flight_iata else 0
+        return result
 
     except Exception as e:
         return {"success": False, "error": str(e)}
