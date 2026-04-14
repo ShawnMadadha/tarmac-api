@@ -83,8 +83,15 @@ def format_flight(details):
     dest_info = dest.get("info") or {}
 
     airline_code = (airline.get("code") or {})
-    airline_iata = airline_code.get("iata") or "N/A"
     flight_num = num.get("default") or "N/A"
+
+    # Extract airline IATA from airline.code, or fall back to the prefix of the flight number
+    airline_iata = airline_code.get("iata") or airline_code.get("icao") or None
+    if not airline_iata and flight_num != "N/A":
+        m = re.match(r"^([A-Z]{2})", flight_num)
+        if m:
+            airline_iata = m.group(1)
+    airline_iata = airline_iata or "N/A"
 
     # Extract the numeric part from "DL1" -> "1" for display like "Delta Air Lines 1"
     flight_number_only = ""
