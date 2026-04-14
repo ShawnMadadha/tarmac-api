@@ -141,7 +141,11 @@ def get_flights(params):
                     # get_flight_details() needs an object with a .id attribute
                     ref = types.SimpleNamespace(id=flight_id)
                     details = fr_api.get_flight_details(ref)
-                    formatted.append(format_flight(details))
+                    entry = format_flight(details)
+                    # Skip entries where details were too incomplete to be useful
+                    if entry.get("flight_iata", "N/A") == "N/A" and entry.get("departure", {}).get("iata", "N/A") == "N/A":
+                        continue
+                    formatted.append(entry)
                 except Exception:
                     continue
         else:
