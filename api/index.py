@@ -12,19 +12,31 @@ except Exception as e:
     IMPORT_ERROR = str(e)
 
 
-def unix_to_iso(ts, tz_offset_seconds=0):
-    """Convert a FlightRadar24 Unix timestamp to ISO 8601.
+def sched_to_iso(ts, tz_offset_seconds=0):
+    """Convert an FR24 *scheduled* timestamp to ISO 8601.
 
-    FR24 encodes scheduled times as local airport time but labels them as UTC
-    (i.e. the numeric value is the local time, not UTC). We reconstruct the
-    correct wall-clock time by attaching the airport's UTC offset so Swift's
-    ISO8601DateFormatter shows the right local departure/arrival time.
+    FR24 encodes scheduled times as local airport wall-clock time stuffed into
+    a UTC-labelled unix timestamp. We pull the digits back out and re-label
+    them with the airport's real UTC offset.
     """
     if not ts:
         return None
-    naive = datetime.utcfromtimestamp(ts)
+    naive = datetime.utcfromtimestamp(int(ts))
     tz = timezone(timedelta(seconds=tz_offset_seconds))
     return naive.replace(tzinfo=tz).isoformat(timespec="seconds")
+
+
+def real_to_iso(ts, tz_offset_seconds=0):
+    """Convert an FR24 *actual / estimated* timestamp to ISO 8601.
+
+    Unlike scheduled times, actual and estimated timestamps are true UTC.
+    We convert to the airport's local timezone for display.
+    """
+    if not ts:
+        return None
+    dt = datetime.fromtimestamp(int(ts), tz=timezone.utc)
+    local_tz = timezone(timedelta(seconds=tz_offset_seconds))
+    return dt.astimezone(local_tz).isoformat(timespec="seconds")
 
 
 def calc_delay(scheduled_ts, other_ts):
@@ -79,9 +91,9 @@ def format_flight(details):
             "iata": origin_code.get("iata") or origin_code.get("icao") or "N/A",
             "terminal": origin_info.get("terminal"),
             "gate": origin_info.get("gate"),
-            "scheduled": unix_to_iso(dep_sched_ts, dep_tz),
-            "estimated": unix_to_iso(dep_est_ts, dep_tz),
-            "actual": unix_to_iso(dep_real_ts, dep_tz),
+            "scheduled": sched_to_iso(dep_sched_ts, dep_tz),
+            "estimated": real_to_iso(dep_est_ts, dep_tz),
+            "actual": real_to_iso(dep_real_ts, dep_tz),
             "delay_minutes": dep_delay,
             "latitude": origin_pos.get("latitude"),
             "longitude": origin_pos.get("longitude"),
@@ -91,9 +103,9 @@ def format_flight(details):
             "iata": dest_code.get("iata") or dest_code.get("icao") or "N/A",
             "terminal": dest_info.get("terminal"),
             "gate": dest_info.get("gate"),
-            "scheduled": unix_to_iso(arr_sched_ts, arr_tz),
-            "estimated": unix_to_iso(arr_est_ts, arr_tz),
-            "actual": unix_to_iso(arr_real_ts, arr_tz),
+            "scheduled": sched_to_iso(arr_sched_ts, arr_tz),
+            "estimated": real_to_iso(arr_est_ts, arr_tz),
+            "actual": real_to_iso(arr_real_ts, arr_tz),
             "delay_minutes": arr_delay,
             "latitude": dest_pos.get("latitude"),
             "longitude": dest_pos.get("longitude"),
