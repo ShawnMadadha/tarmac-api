@@ -1,6 +1,6 @@
 # Tarmac API — Vercel Serverless Backend
 
-Flight data API for the Tarmac iOS app, deployed as Python serverless functions on Vercel. Powered by [AirLabs](https://airlabs.co/) (1,000 free requests/month).
+Flight data API for the **Tarmac** iOS app, deployed as Python serverless functions on Vercel. Powered by [AviationStack](https://aviationstack.com/) for real-time flight tracking, delays, gates, and terminal info.
 
 ## Project Structure
 
@@ -8,19 +8,28 @@ Flight data API for the Tarmac iOS app, deployed as Python serverless functions 
 tarmac-api/
 ├── api/
 │   ├── index.py        # Main flight search endpoint
-│   ├── delays.py       # Delayed flights only endpoint
+│   ├── delays.py       # Delayed flights endpoint (sorted by severity)
 │   └── health.py       # Health check / status
-├── vercel.json         # Vercel routing config
+├── vercel.json         # Vercel routing & function config
 ├── requirements.txt    # Python dependencies
 ├── TarmacAPI.swift     # Drop-in SwiftUI service (for Xcode)
 └── README.md
 ```
 
-## Deployment Steps
+## Features
 
-### 1. Get an AirLabs API Key
+- Real-time flight status (scheduled, active, landed, cancelled, diverted)
+- Departure & arrival times with automatic timezone correction
+- Delay detection with severity classification (minor / moderate / significant / severe)
+- Gate, terminal, and boarding info
+- Airport coordinates for 200+ airports worldwide
+- CORS-enabled for web and mobile clients
 
-1. Sign up at [airlabs.co](https://airlabs.co/) (free)
+## Deployment
+
+### 1. Get an AviationStack API Key
+
+1. Sign up at [aviationstack.com](https://aviationstack.com/)
 2. Copy your API key from the dashboard
 
 ### 2. Deploy on Vercel
@@ -28,23 +37,23 @@ tarmac-api/
 1. Push this repo to GitHub
 2. Go to [vercel.com](https://vercel.com) and import the repo
 3. In **Settings → Environment Variables**, add:
-   - **Key:** `AIRLABS_API_KEY`
-   - **Value:** Your AirLabs API key
+   - **Key:** `AVIATIONSTACK_API_KEY`
+   - **Value:** Your AviationStack API key
 4. Click **Deploy**
 
 ### 3. Test the Endpoints
 
 ```
 https://your-project.vercel.app/api/health
-https://your-project.vercel.app/api?dep_iata=MCO
 https://your-project.vercel.app/api?flight=AA100
-https://your-project.vercel.app/api/delays?dep_iata=JFK
+https://your-project.vercel.app/api?dep_iata=JFK
+https://your-project.vercel.app/api/delays?dep_iata=ATL
 ```
 
 ## API Endpoints
 
 ### `GET /api`
-Search flights with filters.
+Search flights by flight number or airport code.
 
 | Param       | Description                        | Example  |
 |-------------|------------------------------------|----------|
@@ -53,8 +62,10 @@ Search flights with filters.
 | `arr_iata`  | Arrival airport IATA               | LAX      |
 | `limit`     | Max results (default 10)           | 25       |
 
+**Response includes:** flight status, airline name & logo, scheduled/estimated/actual times, delay minutes, gate, terminal, and airport coordinates.
+
 ### `GET /api/delays`
-Returns only delayed flights, sorted by severity.
+Returns only delayed flights, sorted by delay severity.
 
 | Param       | Description              | Example |
 |-------------|--------------------------|---------|
@@ -62,8 +73,10 @@ Returns only delayed flights, sorted by severity.
 | `arr_iata`  | Arrival airport IATA     | ORD     |
 | `limit`     | Max results (default 25) | 50      |
 
+**Severity levels:** minor (<30 min), moderate (30–59 min), significant (60–179 min), severe (180+ min)
+
 ### `GET /api/health`
-Service health check — confirms if your API key is configured.
+Service health check — confirms API key configuration and lists available endpoints.
 
 ## Xcode Integration
 
@@ -95,8 +108,9 @@ struct FlightListView: View {
 }
 ```
 
-## Notes
+## Tech Stack
 
-- AirLabs free tier: 1,000 requests/month.
-- No third-party Python packages required — uses only stdlib `urllib`.
-- CORS headers are included so the API also works from web clients.
+- **Runtime:** Python 3.x (stdlib only — no third-party packages)
+- **Hosting:** Vercel Serverless Functions
+- **Flight Data:** AviationStack REST API
+- **Timezone Handling:** `zoneinfo.ZoneInfo` for accurate local time conversion
