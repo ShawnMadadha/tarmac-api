@@ -23,7 +23,10 @@ def airlabs_get(endpoint, params):
     url = f"{AIRLABS_BASE}/{endpoint}?{qs}"
 
     try:
-        req = Request(url, headers={"Accept": "application/json"})
+        req = Request(url, headers={
+            "Accept": "application/json",
+            "User-Agent": "TarmacAPI/1.0",
+        })
         with urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             if "error" in data:
