@@ -1,90 +1,97 @@
 from http.server import BaseHTTPRequestHandler
 import json
 import os
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urlencode
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 
-AIRLABS_BASE = "https://airlabs.co/api/v9"
+# AviationStack free tier uses HTTP only (HTTPS requires paid plan).
+# This is safe because the call is server-side from Vercel, not from the client.
+AVIATIONSTACK_BASE = "http://api.aviationstack.com/v1"
 
 
 def get_api_key():
-    return os.environ.get("AIRLABS_API_KEY", "")
+    return os.environ.get("AVIATIONSTACK_API_KEY", "")
 
 
-def airlabs_get(endpoint, params):
-    """Make a GET request to the AirLabs API."""
+def aviationstack_get(endpoint, params):
+    """Make a GET request to the AviationStack API."""
     api_key = get_api_key()
     if not api_key:
-        return None, "AIRLABS_API_KEY not configured"
+        return None, "AVIATIONSTACK_API_KEY not configured"
 
-    params["api_key"] = api_key
-    qs = "&".join(f"{k}={v}" for k, v in params.items() if v)
-    url = f"{AIRLABS_BASE}/{endpoint}?{qs}"
+    params["access_key"] = api_key
+    url = f"{AVIATIONSTACK_BASE}/{endpoint}?{urlencode(params)}"
 
     try:
         req = Request(url, headers={
             "Accept": "application/json",
             "User-Agent": "TarmacAPI/1.0",
         })
-        with urlopen(req, timeout=15) as resp:
+        with urlopen(req, timeout=20) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             if "error" in data:
-                return None, data["error"].get("message", "AirLabs API error")
-            return data.get("response", []), None
+                err = data["error"]
+                msg = err.get("message") or err.get("info") or "AviationStack API error"
+                return None, msg
+            return data.get("data", []), None
     except URLError as e:
-        return None, f"AirLabs request failed: {e}"
+        return None, f"AviationStack request failed: {e}"
     except Exception as e:
         return None, str(e)
 
 
-def calc_delay(dep_delayed, arr_delayed):
-    dep = dep_delayed or 0
-    arr = arr_delayed or 0
-    return dep > 0 or arr > 0
-
-
 def format_flight(f):
-    dep_delay = f.get("delayed") or f.get("dep_delayed") or 0
-    arr_delay = f.get("arr_delayed") or 0
+    dep = f.get("departure") or {}
+    arr = f.get("arrival") or {}
+    airline = f.get("airline") or {}
+    flight = f.get("flight") or {}
+
+    dep_delay = dep.get("delay") or 0
+    arr_delay = arr.get("delay") or 0
+    airline_iata = airline.get("iata")
 
     return {
-        "flight_iata": f.get("flight_iata") or "N/A",
-        "flight_icao": f.get("flight_icao") or "N/A",
-        "airline": f.get("airline_name") or "N/A",
-        "airline_iata": f.get("airline_iata"),
+        "flight_iata": flight.get("iata") or "N/A",
+        "flight_icao": flight.get("icao") or "N/A",
+        "airline": airline.get("name") or "N/A",
+        "airline_iata": airline_iata,
         "airline_logo": (
-            f"https://airlabs.co/img/airline/m/{f['airline_iata']}.png"
-            if f.get("airline_iata")
+            f"https://images.kiwi.com/airlines/64/{airline_iata}.png"
+            if airline_iata
             else None
         ),
-        "flight_display": f.get("flight_iata") or f.get("flight_icao") or "N/A",
-        "status": f.get("status") or "unknown",
+        "flight_display": (
+            f"{airline.get('name', '')} {flight.get('number', '')}".strip()
+            or flight.get("iata")
+            or "N/A"
+        ),
+        "status": f.get("flight_status") or "unknown",
         "departure": {
-            "airport": f.get("dep_name") or "N/A",
-            "iata": f.get("dep_iata") or "N/A",
-            "terminal": f.get("dep_terminal"),
-            "gate": f.get("dep_gate"),
-            "scheduled": f.get("dep_time"),
-            "estimated": f.get("dep_estimated"),
-            "actual": f.get("dep_actual"),
+            "airport": dep.get("airport") or "N/A",
+            "iata": dep.get("iata") or "N/A",
+            "terminal": dep.get("terminal"),
+            "gate": dep.get("gate"),
+            "scheduled": dep.get("scheduled"),
+            "estimated": dep.get("estimated"),
+            "actual": dep.get("actual"),
             "delay_minutes": dep_delay if dep_delay > 0 else None,
-            "latitude": f.get("dep_lat"),
-            "longitude": f.get("dep_lng"),
+            "latitude": None,
+            "longitude": None,
         },
         "arrival": {
-            "airport": f.get("arr_name") or "N/A",
-            "iata": f.get("arr_iata") or "N/A",
-            "terminal": f.get("arr_terminal"),
-            "gate": f.get("arr_gate"),
-            "scheduled": f.get("arr_time"),
-            "estimated": f.get("arr_estimated"),
-            "actual": f.get("arr_actual"),
+            "airport": arr.get("airport") or "N/A",
+            "iata": arr.get("iata") or "N/A",
+            "terminal": arr.get("terminal"),
+            "gate": arr.get("gate"),
+            "scheduled": arr.get("scheduled"),
+            "estimated": arr.get("estimated"),
+            "actual": arr.get("actual"),
             "delay_minutes": arr_delay if arr_delay > 0 else None,
-            "latitude": f.get("arr_lat"),
-            "longitude": f.get("arr_lng"),
+            "latitude": None,
+            "longitude": None,
         },
-        "is_delayed": calc_delay(dep_delay, arr_delay),
+        "is_delayed": (dep_delay > 0) or (arr_delay > 0),
     }
 
 
@@ -97,13 +104,14 @@ def get_flights(params):
     api_params = {}
 
     if flight_iata:
-        api_params["flight_iata"] = flight_iata
+        # Normalize: remove spaces, uppercase
+        api_params["flight_iata"] = flight_iata.strip().upper().replace(" ", "")
     if dep_iata:
-        api_params["dep_iata"] = dep_iata
+        api_params["dep_iata"] = dep_iata.strip().upper()
     if arr_iata:
-        api_params["arr_iata"] = arr_iata
+        api_params["arr_iata"] = arr_iata.strip().upper()
 
-    data, error = airlabs_get("flights", api_params)
+    data, error = aviationstack_get("flights", api_params)
     if error:
         return {"success": False, "error": error}
 

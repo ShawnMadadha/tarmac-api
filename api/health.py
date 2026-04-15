@@ -11,12 +11,12 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
 
-        has_key = bool(os.environ.get("AIRLABS_API_KEY", ""))
+        has_key = bool(os.environ.get("AVIATIONSTACK_API_KEY", ""))
 
         result = {
             "service": "tarmac-api",
             "status": "ok",
-            "provider": "AirLabs",
+            "provider": "AviationStack",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "api_key_configured": has_key,
             "endpoints": {
