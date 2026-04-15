@@ -196,6 +196,7 @@ def format_flight(f):
             "delay_minutes": dep_delay if dep_delay > 0 else None,
             "latitude": get_airport_coords(dep_iata)[0],
             "longitude": get_airport_coords(dep_iata)[1],
+            "timezone": dep_tz,
         },
         "arrival": {
             "airport": arr.get("airport") or "N/A",
@@ -208,6 +209,7 @@ def format_flight(f):
             "delay_minutes": arr_delay if arr_delay > 0 else None,
             "latitude": get_airport_coords(arr_iata)[0],
             "longitude": get_airport_coords(arr_iata)[1],
+            "timezone": arr_tz,
         },
         "is_delayed": (dep_delay > 0) or (arr_delay > 0),
     }
