@@ -1,305 +1,111 @@
 from http.server import BaseHTTPRequestHandler
-from datetime import datetime, timezone, timedelta
 import json
-import re
-import types
+import os
 from urllib.parse import urlparse, parse_qs
+from urllib.request import urlopen, Request
+from urllib.error import URLError
 
-try:
-    from FlightRadar24 import FlightRadar24API
-    IMPORT_ERROR = None
-except Exception as e:
-    FlightRadar24API = None
-    IMPORT_ERROR = str(e)
+AIRLABS_BASE = "https://airlabs.co/api/v9"
 
 
-def sched_to_iso(ts, tz_offset_seconds=0):
-    """Convert an FR24 *scheduled* timestamp to ISO 8601.
-
-    FR24 encodes scheduled times as local airport wall-clock time stuffed into
-    a UTC-labelled unix timestamp. We pull the digits back out and re-label
-    them with the airport's real UTC offset.
-    """
-    if not ts:
-        return None
-    naive = datetime.utcfromtimestamp(int(ts))
-    tz = timezone(timedelta(seconds=tz_offset_seconds))
-    return naive.replace(tzinfo=tz).isoformat(timespec="seconds")
+def get_api_key():
+    return os.environ.get("AIRLABS_API_KEY", "")
 
 
-def real_to_iso(ts, tz_offset_seconds=0):
-    """Convert an FR24 *actual / estimated* timestamp to ISO 8601.
+def airlabs_get(endpoint, params):
+    """Make a GET request to the AirLabs API."""
+    api_key = get_api_key()
+    if not api_key:
+        return None, "AIRLABS_API_KEY not configured"
 
-    Unlike scheduled times, actual and estimated timestamps are true UTC.
-    We convert to the airport's local timezone for display.
-    """
-    if not ts:
-        return None
-    dt = datetime.fromtimestamp(int(ts), tz=timezone.utc)
-    local_tz = timezone(timedelta(seconds=tz_offset_seconds))
-    return dt.astimezone(local_tz).isoformat(timespec="seconds")
+    params["api_key"] = api_key
+    qs = "&".join(f"{k}={v}" for k, v in params.items() if v)
+    url = f"{AIRLABS_BASE}/{endpoint}?{qs}"
 
-
-def calc_delay(scheduled_ts, other_ts):
-    if not scheduled_ts or not other_ts:
-        return None
-    diff = int((other_ts - scheduled_ts) / 60)
-    return diff if diff > 0 else None
-
-
-def is_hex_id(flight_id):
-    """Check if a flight ID is a hex tracker ID (works with get_flight_details)
-    vs a flight number like 'DL1' (doesn't work)."""
     try:
-        int(flight_id, 16)
-        return len(flight_id) >= 6
-    except (ValueError, TypeError):
-        return False
+        req = Request(url, headers={"Accept": "application/json"})
+        with urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if "error" in data:
+                return None, data["error"].get("message", "AirLabs API error")
+            return data.get("response", []), None
+    except URLError as e:
+        return None, f"AirLabs request failed: {e}"
+    except Exception as e:
+        return None, str(e)
 
 
-def format_search_item(item):
-    """Build a minimal flight entry from search result data when
-    get_flight_details() can't be used (scheduled flights without hex IDs)."""
-    detail = item.get("detail") or {}
-    flight_num = detail.get("flight") or "N/A"
-    callsign = detail.get("callsign") or "N/A"
-    operator_name = detail.get("operator") or "N/A"
-    logo = detail.get("logo")
-    schd_from = detail.get("schd_from") or "N/A"
-    schd_to = detail.get("schd_to") or "N/A"
+def calc_delay(dep_delayed, arr_delayed):
+    dep = dep_delayed or 0
+    arr = arr_delayed or 0
+    return dep > 0 or arr > 0
 
-    # Extract airline IATA from flight number
-    airline_iata = None
-    if flight_num != "N/A":
-        m = re.match(r"^([A-Z]{2})", flight_num)
-        if m:
-            airline_iata = m.group(1)
-    airline_iata = airline_iata or "N/A"
 
-    flight_number_only = ""
-    if flight_num != "N/A":
-        m = re.search(r"\d+", flight_num)
-        if m:
-            flight_number_only = m.group()
+def format_flight(f):
+    dep_delay = f.get("delayed") or f.get("dep_delayed") or 0
+    arr_delay = f.get("arr_delayed") or 0
 
     return {
-        "flight_iata": flight_num,
-        "flight_icao": callsign,
-        "airline": operator_name,
-        "airline_iata": airline_iata,
-        "airline_logo": logo or (f"https://images.kiwi.com/airlines/64/{airline_iata}.png" if airline_iata != "N/A" else None),
-        "flight_display": f"{operator_name} {flight_number_only}" if flight_number_only and operator_name != "N/A" else flight_num,
-        "status": "Scheduled",
+        "flight_iata": f.get("flight_iata") or "N/A",
+        "flight_icao": f.get("flight_icao") or "N/A",
+        "airline": f.get("airline_name") or "N/A",
+        "airline_iata": f.get("airline_iata"),
+        "airline_logo": (
+            f"https://airlabs.co/img/airline/m/{f['airline_iata']}.png"
+            if f.get("airline_iata")
+            else None
+        ),
+        "flight_display": f.get("flight_iata") or f.get("flight_icao") or "N/A",
+        "status": f.get("status") or "unknown",
         "departure": {
-            "airport": schd_from,
-            "iata": schd_from,
-            "terminal": None,
-            "gate": None,
-            "scheduled": None,
-            "estimated": None,
-            "actual": None,
-            "delay_minutes": None,
-            "latitude": None,
-            "longitude": None,
+            "airport": f.get("dep_name") or "N/A",
+            "iata": f.get("dep_iata") or "N/A",
+            "terminal": f.get("dep_terminal"),
+            "gate": f.get("dep_gate"),
+            "scheduled": f.get("dep_time"),
+            "estimated": f.get("dep_estimated"),
+            "actual": f.get("dep_actual"),
+            "delay_minutes": dep_delay if dep_delay > 0 else None,
+            "latitude": f.get("dep_lat"),
+            "longitude": f.get("dep_lng"),
         },
         "arrival": {
-            "airport": schd_to,
-            "iata": schd_to,
-            "terminal": None,
-            "gate": None,
-            "scheduled": None,
-            "estimated": None,
-            "actual": None,
-            "delay_minutes": None,
-            "latitude": None,
-            "longitude": None,
+            "airport": f.get("arr_name") or "N/A",
+            "iata": f.get("arr_iata") or "N/A",
+            "terminal": f.get("arr_terminal"),
+            "gate": f.get("arr_gate"),
+            "scheduled": f.get("arr_time"),
+            "estimated": f.get("arr_estimated"),
+            "actual": f.get("arr_actual"),
+            "delay_minutes": arr_delay if arr_delay > 0 else None,
+            "latitude": f.get("arr_lat"),
+            "longitude": f.get("arr_lng"),
         },
-        "is_delayed": False,
-    }
-
-
-def format_flight(details):
-    ident = details.get("identification") or {}
-    airline = details.get("airline") or {}
-    airport = details.get("airport") or {}
-    time = details.get("time") or {}
-    status = details.get("status") or {}
-
-    origin = airport.get("origin") or {}
-    dest = airport.get("destination") or {}
-
-    sched = time.get("scheduled") or {}
-    real = time.get("real") or {}
-    estimated = time.get("estimated") or {}
-
-    dep_sched_ts = sched.get("departure")
-    dep_real_ts = real.get("departure")
-    dep_est_ts = estimated.get("departure")
-    arr_sched_ts = sched.get("arrival")
-    arr_real_ts = real.get("arrival")
-    arr_est_ts = estimated.get("arrival") or (time.get("other") or {}).get("eta")
-
-    dep_tz = (origin.get("timezone") or {}).get("offset") or 0
-    arr_tz = (dest.get("timezone") or {}).get("offset") or 0
-
-    dep_delay = calc_delay(dep_sched_ts, dep_real_ts or dep_est_ts)
-    arr_delay = calc_delay(arr_sched_ts, arr_real_ts or arr_est_ts)
-
-    num = ident.get("number") or {}
-    origin_pos = origin.get("position") or {}
-    dest_pos = dest.get("position") or {}
-    origin_code = origin.get("code") or {}
-    dest_code = dest.get("code") or {}
-    origin_info = origin.get("info") or {}
-    dest_info = dest.get("info") or {}
-
-    airline_code = (airline.get("code") or {})
-    flight_num = num.get("default") or "N/A"
-
-    # Extract airline IATA from airline.code, or fall back to the prefix of the flight number
-    airline_iata = airline_code.get("iata") or airline_code.get("icao") or None
-    if not airline_iata and flight_num != "N/A":
-        m = re.match(r"^([A-Z]{2})", flight_num)
-        if m:
-            airline_iata = m.group(1)
-    airline_iata = airline_iata or "N/A"
-
-    # Extract the numeric part from "DL1" -> "1" for display like "Delta Air Lines 1"
-    flight_number_only = ""
-    if flight_num != "N/A":
-        m = re.search(r"\d+", flight_num)
-        if m:
-            flight_number_only = m.group()
-
-    return {
-        "flight_iata": flight_num,
-        "flight_icao": ident.get("callsign") or "N/A",
-        "airline": airline.get("name") or "N/A",
-        "airline_iata": airline_iata,
-        "airline_logo": f"https://images.kiwi.com/airlines/64/{airline_iata}.png" if airline_iata != "N/A" else None,
-        "flight_display": f"{airline.get('name', 'N/A')} {flight_number_only}" if flight_number_only else flight_num,
-        "status": status.get("text") or "unknown",
-        "departure": {
-            "airport": origin.get("name") or "N/A",
-            "iata": origin_code.get("iata") or origin_code.get("icao") or "N/A",
-            "terminal": origin_info.get("terminal"),
-            "gate": origin_info.get("gate"),
-            "scheduled": sched_to_iso(dep_sched_ts, dep_tz),
-            "estimated": real_to_iso(dep_est_ts, dep_tz),
-            "actual": real_to_iso(dep_real_ts, dep_tz),
-            "delay_minutes": dep_delay,
-            "latitude": origin_pos.get("latitude"),
-            "longitude": origin_pos.get("longitude"),
-        },
-        "arrival": {
-            "airport": dest.get("name") or "N/A",
-            "iata": dest_code.get("iata") or dest_code.get("icao") or "N/A",
-            "terminal": dest_info.get("terminal"),
-            "gate": dest_info.get("gate"),
-            "scheduled": sched_to_iso(arr_sched_ts, arr_tz),
-            "estimated": real_to_iso(arr_est_ts, arr_tz),
-            "actual": real_to_iso(arr_real_ts, arr_tz),
-            "delay_minutes": arr_delay,
-            "latitude": dest_pos.get("latitude"),
-            "longitude": dest_pos.get("longitude"),
-        },
-        "is_delayed": bool(dep_delay and dep_delay > 0) or bool(arr_delay and arr_delay > 0),
+        "is_delayed": calc_delay(dep_delay, arr_delay),
     }
 
 
 def get_flights(params):
-    if IMPORT_ERROR:
-        return {"success": False, "error": f"Import failed: {IMPORT_ERROR}"}
-
     flight_iata = params.get("flight", [None])[0]
     dep_iata = params.get("dep_iata", [None])[0]
     arr_iata = params.get("arr_iata", [None])[0]
     limit = int(params.get("limit", ["10"])[0])
 
-    fr_api = FlightRadar24API()
-    formatted = []
+    api_params = {}
 
-    try:
-        if flight_iata:
-            needle = flight_iata.strip().upper().replace(" ", "")
-            results = fr_api.search(query=flight_iata, limit=limit * 4)
-            # "live" = currently airborne, "schedule" = upcoming/on-ground
-            candidates = results.get("live", []) + results.get("schedule", [])
+    if flight_iata:
+        api_params["flight_iata"] = flight_iata
+    if dep_iata:
+        api_params["dep_iata"] = dep_iata
+    if arr_iata:
+        api_params["arr_iata"] = arr_iata
 
-            # Separate live (hex ID, have full details) from schedule entries
-            live_candidates = [c for c in candidates if is_hex_id(c.get("id", ""))]
-            sched_candidates = [c for c in candidates if not is_hex_id(c.get("id", ""))]
+    data, error = airlabs_get("flights", api_params)
+    if error:
+        return {"success": False, "error": error}
 
-            # Among live results, prefer exact flight number matches
-            exact_live = [
-                c for c in live_candidates
-                if (c.get("detail", {}).get("flight") or "").upper().replace(" ", "") == needle
-            ]
-
-            # Among schedule results, prefer exact matches
-            exact_sched = [
-                c for c in sched_candidates
-                if (c.get("detail", {}).get("flight") or "").upper().replace(" ", "") == needle
-            ]
-
-            # Priority: exact live > all live > exact schedule > all schedule
-            if exact_live:
-                candidates = exact_live
-            elif live_candidates:
-                candidates = live_candidates
-            elif exact_sched:
-                candidates = exact_sched
-            else:
-                candidates = sched_candidates
-
-            for item in candidates:
-                if len(formatted) >= limit:
-                    break
-                flight_id = item.get("id")
-                if not flight_id:
-                    continue
-
-                # Schedule entries have non-hex IDs (e.g. "DL1") that
-                # can't be used with get_flight_details(). Build a
-                # minimal entry from the search data instead.
-                if not is_hex_id(flight_id):
-                    entry = format_search_item(item)
-                    if entry.get("flight_iata", "N/A") != "N/A":
-                        formatted.append(entry)
-                    continue
-
-                try:
-                    ref = types.SimpleNamespace(id=flight_id)
-                    details = fr_api.get_flight_details(ref)
-                    if not isinstance(details, dict) or not details:
-                        continue
-                    entry = format_flight(details)
-                    # Skip entries where details were too incomplete
-                    if entry.get("flight_iata", "N/A") == "N/A" and entry.get("departure", {}).get("iata", "N/A") == "N/A":
-                        continue
-                    formatted.append(entry)
-                except Exception:
-                    continue
-        else:
-            flights = fr_api.get_flights()
-
-            for f in flights:
-                if len(formatted) >= limit:
-                    break
-                if dep_iata and getattr(f, "origin_airport_iata", None) != dep_iata:
-                    continue
-                if arr_iata and getattr(f, "destination_airport_iata", None) != arr_iata:
-                    continue
-                try:
-                    details = fr_api.get_flight_details(f)
-                    formatted.append(format_flight(details))
-                except Exception:
-                    continue
-
-        return {"success": True, "count": len(formatted), "flights": formatted}
-
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    formatted = [format_flight(f) for f in (data or [])[:limit]]
+    return {"success": True, "count": len(formatted), "flights": formatted}
 
 
 class handler(BaseHTTPRequestHandler):

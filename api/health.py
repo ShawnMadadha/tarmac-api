@@ -11,15 +11,16 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
 
-        has_key = bool(os.environ.get("AVIATION_API_KEY", ""))
+        has_key = bool(os.environ.get("AIRLABS_API_KEY", ""))
 
         result = {
             "service": "tarmac-api",
             "status": "ok",
+            "provider": "AirLabs",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "api_key_configured": has_key,
             "endpoints": {
-                "/api": "Flight search (params: flight, dep_iata, arr_iata, airline, status, limit)",
+                "/api": "Flight search (params: flight, dep_iata, arr_iata, limit)",
                 "/api/delays": "Delayed flights only (params: dep_iata, arr_iata, limit)",
                 "/api/health": "This health check",
             },
