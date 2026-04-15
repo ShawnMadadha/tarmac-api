@@ -1,6 +1,5 @@
 from http.server import BaseHTTPRequestHandler
 import json
-import os
 from datetime import datetime, timezone
 
 
@@ -11,14 +10,10 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
 
-        has_key = bool(os.environ.get("AVIATIONSTACK_API_KEY", ""))
-
         result = {
             "service": "tarmac-api",
             "status": "ok",
-            "provider": "AviationStack",
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "api_key_configured": has_key,
             "endpoints": {
                 "/api": "Flight search (params: flight, dep_iata, arr_iata, limit)",
                 "/api/delays": "Delayed flights only (params: dep_iata, arr_iata, limit)",

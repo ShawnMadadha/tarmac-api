@@ -116,10 +116,10 @@ def aviationstack_get(endpoint, params):
                 msg = err.get("message") or err.get("info") or "AviationStack API error"
                 return None, msg
             return data.get("data", []), None
-    except URLError as e:
-        return None, f"AviationStack request failed: {e}"
-    except Exception as e:
-        return None, str(e)
+    except URLError:
+        return None, "Flight data temporarily unavailable. Please try again."
+    except Exception:
+        return None, "An unexpected error occurred. Please try again."
 
 
 def fix_timezone(time_str, tz_name):
@@ -217,7 +217,10 @@ def get_flights(params):
     flight_iata = params.get("flight", [None])[0]
     dep_iata = params.get("dep_iata", [None])[0]
     arr_iata = params.get("arr_iata", [None])[0]
-    limit = int(params.get("limit", ["10"])[0])
+    try:
+        limit = min(int(params.get("limit", ["10"])[0]), 50)
+    except (ValueError, TypeError):
+        limit = 10
 
     api_params = {}
 
