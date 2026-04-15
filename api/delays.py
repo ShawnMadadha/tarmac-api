@@ -5,7 +5,7 @@ from urllib.parse import urlparse, parse_qs, urlencode
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 
-AVIATIONSTACK_BASE = "http://api.aviationstack.com/v1"
+AVIATIONSTACK_BASE = "https://api.aviationstack.com/v1"
 
 
 def get_api_key():

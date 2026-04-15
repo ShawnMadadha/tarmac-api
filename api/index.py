@@ -9,7 +9,7 @@ from urllib.error import URLError
 
 # AviationStack free tier uses HTTP only (HTTPS requires paid plan).
 # This is safe because the call is server-side from Vercel, not from the client.
-AVIATIONSTACK_BASE = "http://api.aviationstack.com/v1"
+AVIATIONSTACK_BASE = "https://api.aviationstack.com/v1"
 
 # AviationStack returns local airport times labelled as +00:00.
 # We strip the offset so the iOS app treats them as local times.
