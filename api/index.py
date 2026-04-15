@@ -2,54 +2,13 @@ from http.server import BaseHTTPRequestHandler
 import json
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse, parse_qs, urlencode
 from urllib.request import urlopen, Request
 from urllib.error import URLError
+from zoneinfo import ZoneInfo
 
-# AviationStack free tier uses HTTP only (HTTPS requires paid plan).
-# This is safe because the call is server-side from Vercel, not from the client.
 AVIATIONSTACK_BASE = "https://api.aviationstack.com/v1"
-
-# AviationStack returns local airport times labelled as +00:00.
-# We strip the offset so the iOS app treats them as local times.
-# Map airport IATA -> UTC offset string for correct timezone labelling.
-AIRPORT_TZ_OFFSETS = {
-    # US Eastern
-    "JFK": "-04:00", "EWR": "-04:00", "LGA": "-04:00", "BOS": "-04:00",
-    "PHL": "-04:00", "CLT": "-04:00", "ATL": "-04:00", "MIA": "-04:00",
-    "FLL": "-04:00", "MCO": "-04:00", "TPA": "-04:00", "IAD": "-04:00",
-    "DCA": "-04:00", "BWI": "-04:00", "DTW": "-04:00", "CLE": "-04:00",
-    "PIT": "-04:00", "RDU": "-04:00", "JAX": "-04:00", "BUF": "-04:00",
-    "IND": "-04:00", "CMH": "-04:00", "CVG": "-04:00", "SYR": "-04:00",
-    "RIC": "-04:00", "PBI": "-04:00", "RSW": "-04:00", "SRQ": "-04:00",
-    # US Central
-    "ORD": "-05:00", "DFW": "-05:00", "IAH": "-05:00", "HOU": "-05:00",
-    "MSP": "-05:00", "STL": "-05:00", "MCI": "-05:00", "AUS": "-05:00",
-    "SAT": "-05:00", "MSY": "-05:00", "MKE": "-05:00", "OMA": "-05:00",
-    "MDW": "-05:00", "BNA": "-05:00", "MEM": "-05:00", "OKC": "-05:00",
-    # US Mountain
-    "DEN": "-06:00", "PHX": "-07:00", "SLC": "-06:00", "ABQ": "-06:00",
-    "ELP": "-06:00", "TUS": "-07:00", "BOI": "-06:00",
-    # US Pacific
-    "LAX": "-07:00", "SFO": "-07:00", "SEA": "-07:00", "SAN": "-07:00",
-    "PDX": "-07:00", "SJC": "-07:00", "OAK": "-07:00", "SMF": "-07:00",
-    "LAS": "-07:00", "BUR": "-07:00", "ONT": "-07:00", "SNA": "-07:00",
-    # US Hawaii / Alaska
-    "HNL": "-10:00", "OGG": "-10:00", "ANC": "-08:00",
-    # Europe
-    "LHR": "+01:00", "LGW": "+01:00", "CDG": "+02:00", "FRA": "+02:00",
-    "AMS": "+02:00", "MAD": "+02:00", "FCO": "+02:00", "IST": "+03:00",
-    "MUC": "+02:00", "ZRH": "+02:00", "BCN": "+02:00", "DUB": "+01:00",
-    # Asia
-    "HND": "+09:00", "NRT": "+09:00", "ICN": "+09:00", "PEK": "+08:00",
-    "PVG": "+08:00", "HKG": "+08:00", "SIN": "+08:00", "BKK": "+07:00",
-    "DEL": "+05:30", "DXB": "+04:00", "DOH": "+03:00",
-    # Others
-    "SYD": "+10:00", "MEL": "+10:00", "GRU": "-03:00", "MEX": "-06:00",
-    "BOG": "-05:00", "SCL": "-04:00", "LIM": "-05:00", "YYZ": "-04:00",
-    "YVR": "-07:00", "YUL": "-04:00",
-}
 
 
 def get_api_key():
@@ -83,29 +42,36 @@ def aviationstack_get(endpoint, params):
         return None, str(e)
 
 
-def fix_timezone(time_str, airport_iata):
-    """Replace the fake +00:00 offset with the airport's real timezone offset.
+def fix_timezone(time_str, tz_name):
+    """Replace the fake +00:00 offset with the real offset from the timezone name.
 
     AviationStack returns local airport wall-clock times but labels them +00:00.
-    We swap in the correct offset so iOS parses the time correctly.
+    We use the timezone name (e.g. 'America/New_York') from the response to
+    compute the correct UTC offset and swap it in.
     """
-    if not time_str or not airport_iata:
+    if not time_str:
+        return None
+    if not tz_name:
         return time_str
-    tz = AIRPORT_TZ_OFFSETS.get(airport_iata.upper())
-    if not tz:
-        return time_str
-    # Replace +00:00 at the end with the real offset
-    return re.sub(r'[+-]\d{2}:\d{2}$', tz, time_str)
 
+    try:
+        tz = ZoneInfo(tz_name)
+        # Parse the date portion to get the correct offset for that date
+        date_match = re.match(r'(\d{4}-\d{2}-\d{2})', time_str)
+        if date_match:
+            dt = datetime.fromisoformat(date_match.group(1))
+            offset = tz.utcoffset(dt)
+            if offset is not None:
+                total_seconds = int(offset.total_seconds())
+                sign = "+" if total_seconds >= 0 else "-"
+                hours, remainder = divmod(abs(total_seconds), 3600)
+                minutes = remainder // 60
+                offset_str = f"{sign}{hours:02d}:{minutes:02d}"
+                return re.sub(r'[+-]\d{2}:\d{2}$', offset_str, time_str)
+    except Exception:
+        pass
 
-def status_priority(status):
-    """Sort priority: active > scheduled > landed."""
-    s = (status or "").lower()
-    if s == "active":
-        return 0
-    if s == "scheduled":
-        return 1
-    return 2
+    return time_str
 
 
 def format_flight(f):
@@ -119,6 +85,8 @@ def format_flight(f):
     airline_iata = airline.get("iata")
     dep_iata = dep.get("iata") or ""
     arr_iata = arr.get("iata") or ""
+    dep_tz = dep.get("timezone")
+    arr_tz = arr.get("timezone")
 
     return {
         "flight_iata": flight.get("iata") or "N/A",
@@ -136,14 +104,15 @@ def format_flight(f):
             or "N/A"
         ),
         "status": f.get("flight_status") or "unknown",
+        "flight_date": f.get("flight_date"),
         "departure": {
             "airport": dep.get("airport") or "N/A",
             "iata": dep_iata or "N/A",
             "terminal": dep.get("terminal"),
             "gate": dep.get("gate"),
-            "scheduled": fix_timezone(dep.get("scheduled"), dep_iata),
-            "estimated": fix_timezone(dep.get("estimated"), dep_iata),
-            "actual": fix_timezone(dep.get("actual"), dep_iata),
+            "scheduled": fix_timezone(dep.get("scheduled"), dep_tz),
+            "estimated": fix_timezone(dep.get("estimated"), dep_tz),
+            "actual": fix_timezone(dep.get("actual"), dep_tz),
             "delay_minutes": dep_delay if dep_delay > 0 else None,
             "latitude": None,
             "longitude": None,
@@ -153,9 +122,9 @@ def format_flight(f):
             "iata": arr_iata or "N/A",
             "terminal": arr.get("terminal"),
             "gate": arr.get("gate"),
-            "scheduled": fix_timezone(arr.get("scheduled"), arr_iata),
-            "estimated": fix_timezone(arr.get("estimated"), arr_iata),
-            "actual": fix_timezone(arr.get("actual"), arr_iata),
+            "scheduled": fix_timezone(arr.get("scheduled"), arr_tz),
+            "estimated": fix_timezone(arr.get("estimated"), arr_tz),
+            "actual": fix_timezone(arr.get("actual"), arr_tz),
             "delay_minutes": arr_delay if arr_delay > 0 else None,
             "latitude": None,
             "longitude": None,
@@ -173,21 +142,30 @@ def get_flights(params):
     api_params = {}
 
     if flight_iata:
-        # Normalize: remove spaces, uppercase
         api_params["flight_iata"] = flight_iata.strip().upper().replace(" ", "")
     if dep_iata:
         api_params["dep_iata"] = dep_iata.strip().upper()
     if arr_iata:
         api_params["arr_iata"] = arr_iata.strip().upper()
 
+    # When searching by flight number, request today's date to get the
+    # current/upcoming flight instead of old landed ones.
+    if flight_iata and "flight_date" not in api_params:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        api_params["flight_date"] = today
+
     data, error = aviationstack_get("flights", api_params)
     if error:
         return {"success": False, "error": error}
 
-    # Sort: active/scheduled first, then newest flight_date first
+    # Sort: scheduled > active > landed, newest first
     results = list(data or [])
     results.sort(key=lambda f: f.get("flight_date") or "0000-00-00", reverse=True)
-    results.sort(key=lambda f: status_priority(f.get("flight_status")))
+    results.sort(key=lambda f: (
+        0 if (f.get("flight_status") or "") == "scheduled" else
+        1 if (f.get("flight_status") or "") == "active" else
+        2
+    ))
 
     formatted = [format_flight(f) for f in results[:limit]]
     return {"success": True, "count": len(formatted), "flights": formatted}
