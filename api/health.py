@@ -21,6 +21,7 @@ class handler(BaseHTTPRequestHandler):
                 "/api/brand": "Brand logo lookup via Brandfetch (params: domain)",
                 "/api/nearby": "Yelp-backed nearby places with real ratings/hours (params: lat, lon). 5m edge cache.",
                 "/api/plan": "AI-curated 3-stop layover plan (POST body: flight, airport, places[], budget, time_available, mood).",
+                "/api/aircraft-history": "Where's-your-plane timeline — every leg the aircraft has flown today (params: flight).",
                 "/api/health": "This health check",
             },
         }
