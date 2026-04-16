@@ -17,6 +17,7 @@ class handler(BaseHTTPRequestHandler):
             "endpoints": {
                 "/api": "Flight search (params: flight, dep_iata, arr_iata, limit)",
                 "/api/delays": "Delayed flights only (params: dep_iata, arr_iata, limit)",
+                "/api/place-cost": "Place cost + visit duration estimate (params: name, category, lat, lon)",
                 "/api/health": "This health check",
             },
         }
