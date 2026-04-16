@@ -18,6 +18,7 @@ class handler(BaseHTTPRequestHandler):
                 "/api": "Flight search (params: flight, dep_iata, arr_iata, limit)",
                 "/api/delays": "Delayed flights only (params: dep_iata, arr_iata, limit)",
                 "/api/place-cost": "Place cost + visit duration estimate (params: name, category, lat, lon)",
+                "/api/brand": "Brand logo lookup via Brandfetch (params: domain)",
                 "/api/health": "This health check",
             },
         }
