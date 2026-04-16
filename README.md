@@ -1,116 +1,179 @@
 # Tarmac API — Vercel Serverless Backend
 
-Flight data API for the **Tarmac** iOS app, deployed as Python serverless functions on Vercel. Powered by [AviationStack](https://aviationstack.com/) for real-time flight tracking, delays, gates, and terminal info.
+Python serverless backend for the **Tarmac** iOS app (flight-delay sightseeing planner). Deployed on Vercel, built on `http.server.BaseHTTPRequestHandler` with a thin `requests` dependency.
+
+## Endpoints
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/api` | `GET` | Flight lookup (FlightRadar24 primary, AviationStack fallback) |
+| `/api/delays` | `GET` | Delayed flights sorted by severity (AviationStack) |
+| `/api/nearby` | `GET` | Yelp-backed POIs with real ratings, open-now, photos |
+| `/api/place-cost` | `GET` | Per-venue USD + visit-duration estimate via OpenRouter |
+| `/api/plan` | `POST` | AI-curated 3-stop layover plan via OpenRouter |
+| `/api/brand` | `GET` | Brand logo lookup via Brandfetch |
+| `/api/health` | `GET` | Status + env-var check |
 
 ## Project Structure
 
 ```
 tarmac-api/
 ├── api/
-│   ├── index.py        # Main flight search endpoint
-│   ├── delays.py       # Delayed flights endpoint (sorted by severity)
-│   └── health.py       # Health check / status
-├── vercel.json         # Vercel routing & function config
-├── requirements.txt    # Python dependencies
-├── TarmacAPI.swift     # Drop-in SwiftUI service (for Xcode)
+│   ├── index.py          # /api — flight search (FR24 + AvStk hybrid)
+│   ├── delays.py         # /api/delays — delayed flights, sorted
+│   ├── nearby.py         # /api/nearby — Yelp Fusion with parallel open-now diff
+│   ├── place-cost.py     # /api/place-cost — OpenRouter USD + visit-minute estimate
+│   ├── plan.py           # /api/plan — AI 3-stop layover planner
+│   ├── brand.py          # /api/brand — Brandfetch logo lookup
+│   └── health.py         # /api/health — env + endpoint listing
+├── vercel.json           # function runtime + CORS headers
+├── requirements.txt      # runtime dependencies
+├── TarmacAPI.swift       # drop-in SwiftUI client (copy into Xcode)
 └── README.md
 ```
 
-## Features
-
-- Real-time flight status (scheduled, active, landed, cancelled, diverted)
-- Departure & arrival times with automatic timezone correction
-- Delay detection with severity classification (minor / moderate / significant / severe)
-- Gate, terminal, and boarding info
-- Airport coordinates for 200+ airports worldwide
-- CORS-enabled for web and mobile clients
-
 ## Deployment
 
-### 1. Get an AviationStack API Key
+### 1. Environment variables (Vercel → Settings → Environment Variables)
 
-1. Sign up at [aviationstack.com](https://aviationstack.com/)
-2. Copy your API key from the dashboard
+| Variable | Required for | Notes |
+|---|---|---|
+| `AVIATIONSTACK_API_KEY` | `/api`, `/api/delays` | [aviationstack.com](https://aviationstack.com) |
+| `YELP_API_KEY` | `/api/nearby` | [yelp.com/developers](https://www.yelp.com/developers) |
+| `OPENROUTER_API_KEY` | `/api/place-cost`, `/api/plan` | [openrouter.ai](https://openrouter.ai) |
+| `BRANDFETCH_CLIENT_ID` | `/api/brand` | [brandfetch.com](https://brandfetch.com) |
+| `USE_FLIGHTRADAR` | `/api` | `"1"` (default) uses FR24 first; `"0"` forces AviationStack |
+| `OPENROUTER_PRICE_MODEL` | `/api/place-cost` | override default `google/gemini-3.1-flash-lite-preview` |
+| `OPENROUTER_PLAN_MODEL` | `/api/plan` | override default plan model |
 
-### 2. Deploy on Vercel
+### 2. Deploy
 
-1. Push this repo to GitHub
-2. Go to [vercel.com](https://vercel.com) and import the repo
-3. In **Settings → Environment Variables**, add:
-   - **Key:** `AVIATIONSTACK_API_KEY`
-   - **Value:** Your AviationStack API key
-4. Click **Deploy**
+```bash
+# Vercel CLI
+vercel --prod
 
-### 3. Test the Endpoints
-
-```
-https://your-project.vercel.app/api/health
-https://your-project.vercel.app/api?flight=AA100
-https://your-project.vercel.app/api?dep_iata=JFK
-https://your-project.vercel.app/api/delays?dep_iata=ATL
+# or import the repo at vercel.com
 ```
 
-## API Endpoints
+### 3. Smoke-test
 
-### `GET /api`
-Search flights by flight number or airport code.
+```bash
+curl https://your-project.vercel.app/api/health
+curl "https://your-project.vercel.app/api?flight=AA100"
+curl "https://your-project.vercel.app/api/nearby?lat=28.4312&lon=-81.3081"
+curl "https://your-project.vercel.app/api/place-cost?name=Starbucks&category=Coffee&lat=28.5&lon=-81.3"
+```
 
-| Param       | Description                        | Example  |
-|-------------|------------------------------------|----------|
-| `flight`    | IATA flight code                   | AA100    |
-| `dep_iata`  | Departure airport IATA             | MCO      |
-| `arr_iata`  | Arrival airport IATA               | LAX      |
-| `limit`     | Max results (default 10)           | 25       |
+## Endpoint Reference
 
-**Response includes:** flight status, airline name & logo, scheduled/estimated/actual times, delay minutes, gate, terminal, and airport coordinates.
+### `GET /api` — Flight lookup
 
-### `GET /api/delays`
-Returns only delayed flights, sorted by delay severity.
+Uses FlightRadar24 via [FlightRadarAPI](https://pypi.org/project/FlightRadarAPI/) when `flight=` is provided, else AviationStack. Responses cached server-side for 5 min.
 
-| Param       | Description              | Example |
-|-------------|--------------------------|---------|
-| `dep_iata`  | Departure airport IATA   | JFK     |
-| `arr_iata`  | Arrival airport IATA     | ORD     |
-| `limit`     | Max results (default 25) | 50      |
+| Param | Description | Example |
+|---|---|---|
+| `flight` | IATA flight code | `AA100` |
+| `dep_iata` | Departure airport IATA | `MCO` |
+| `arr_iata` | Arrival airport IATA | `LAX` |
+| `limit` | Max results (default 10) | `25` |
 
-**Severity levels:** minor (<30 min), moderate (30–59 min), significant (60–179 min), severe (180+ min)
+**Response fields:** flight status, airline name + logo, `scheduled` / `estimated` / `actual` times, delay minutes, **gate, terminal**, airport coordinates, IANA timezone.
 
-### `GET /api/health`
-Service health check — confirms API key configuration and lists available endpoints.
+### `GET /api/delays` — Delayed flights
 
-## Xcode Integration
+| Param | Description | Example |
+|---|---|---|
+| `dep_iata` | Departure airport | `JFK` |
+| `arr_iata` | Arrival airport | `ORD` |
+| `limit` | Max (default 25) | `50` |
 
-1. Copy `TarmacAPI.swift` into your Xcode project
-2. Update `baseURL` with your Vercel deployment URL
-3. Use it in any SwiftUI view:
+**Severity buckets:** minor (<30m), moderate (30–59m), significant (60–179m), severe (180m+).
 
-```swift
-struct FlightListView: View {
-    @StateObject private var api = TarmacAPI()
+### `GET /api/nearby` — Yelp POIs
 
-    var body: some View {
-        List(api.flights) { flight in
-            VStack(alignment: .leading) {
-                Text(flight.flightIata ?? "N/A")
-                    .font(.headline)
-                Text("\(flight.departure.airport) → \(flight.arrival.airport)")
-                    .font(.subheadline)
-                if flight.isDelayed {
-                    Text("DELAYED")
-                        .foregroundColor(.red)
-                }
-            }
-        }
-        .task {
-            await api.searchFlights(depAirport: "MCO")
-        }
-    }
+Fetches restaurants, coffee, parks, culture, and shopping categories in parallel (10 concurrent Yelp calls, ~8s timeout, 5-min edge cache). For each bucket we fire one unfiltered + one `open_now=true` search and diff the id sets so the client gets accurate per-venue open status.
+
+| Param | Description | Example |
+|---|---|---|
+| `lat` | Latitude | `28.4312` |
+| `lon` | Longitude | `-81.3081` |
+
+**Response:** `{ success, places: [{id, name, category, rating, review_count, price, is_open_now, latitude, longitude, phone, yelp_url, image_url, distance_meters, address}], count }`
+
+### `GET /api/place-cost` — Per-venue price + duration
+
+Calls OpenRouter (Gemini-class model) with a strict JSON prompt to estimate USD + visit-duration for a specific named venue. Clamped to realistic ranges (`$0–250`, `5–240 min`).
+
+| Param | Description |
+|---|---|
+| `name` | Venue name (required) |
+| `category` | Search category context |
+| `lat`, `lon` | Coordinates |
+
+**Response:** `{ success, place, estimate: {estimated_usd, min_usd, max_usd, visit_duration_minutes, confidence, model} }`
+
+### `POST /api/plan` — AI 3-stop planner
+
+Picks 3 coherent stops from the candidate list against the user's mood, budget, and time window. Model output is cross-checked against the provided id list to reject hallucinated stops (fewer than 3 valid ids → request fails so the client can fall back).
+
+**Request body:**
+```json
+{
+  "flight": "AA 100",
+  "airport": "MCO",
+  "time_available": 180,
+  "budget": 50,
+  "mood": "make-the-most-of-it",
+  "places": [
+    { "id": "roast-master", "name": "Roast Master Coffee", "category": "Coffee", "cost": 5, "visit_minutes": 10 },
+    …
+  ]
 }
 ```
 
+**Response:**
+```json
+{
+  "success": true,
+  "plan": {
+    "plan_title": "Coffee & City Views",
+    "why": "Short walk, one caffeine hit, one landmark — fits easily inside the window.",
+    "stops": [
+      { "id": "roast-master", "name": "Roast Master Coffee", "hype": "Local roaster everyone pretends is a secret." },
+      …
+    ]
+  },
+  "model": "google/gemini-3.1-flash-lite-preview"
+}
+```
+
+### `GET /api/brand` — Logo lookup
+
+| Param | Description |
+|---|---|
+| `domain` | Business website host (e.g. `starbucks.com`) |
+
+Streams back a PNG from Brandfetch's CDN.
+
+### `GET /api/health` — Status
+
+Returns `{service, status, timestamp, api_key_configured, openrouter_key_configured, yelp_key_configured, flightradar_enabled, endpoints}`. Useful as a Vercel smoke-test and for verifying env-var wiring.
+
+## Xcode Integration
+
+Copy `TarmacAPI.swift` into your Xcode project and update `baseURL`:
+
+```swift
+static let baseURL = "https://your-project.vercel.app"
+```
+
+The iOS app calls `/api` for flight lookup, `/api/nearby` for POIs, `/api/place-cost` for per-venue estimates, `/api/plan` for the AI planner, and `/api/brand` for logos. See the `tarmac` frontend repo for full client code.
+
 ## Tech Stack
 
-- **Runtime:** Python 3.x (stdlib only — no third-party packages)
-- **Hosting:** Vercel Serverless Functions
-- **Flight Data:** AviationStack REST API
-- **Timezone Handling:** `zoneinfo.ZoneInfo` for accurate local time conversion
+- **Runtime:** Python 3.x
+- **Dependencies:** `requests` (+ `FlightRadarAPI` + `beautifulsoup4` on the frontend-repo mirror for FR24 scraping)
+- **Hosting:** Vercel Serverless Functions (`@vercel/python@4.5.0`, 30s max duration)
+- **Caching:** 5-min in-memory server cache for flight endpoints; 5-min edge cache on `/api/nearby`
+- **LLM:** OpenRouter (default `google/gemini-3.1-flash-lite-preview`)
+- **Timezones:** `zoneinfo.ZoneInfo`
