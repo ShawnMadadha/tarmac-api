@@ -1,12 +1,12 @@
 # Tarmac API — Vercel Serverless Backend
 
-Python serverless backend for the **Tarmac** iOS app (flight-delay sightseeing planner). Deployed on Vercel, built on `http.server.BaseHTTPRequestHandler` with a thin `requests` dependency.
+Python serverless backend for the **Tarmac** iOS app (flight-delay sightseeing planner). Deployed on Vercel, built on `http.server.BaseHTTPRequestHandler` with a thin `requests` dependency. Flight data comes from AviationStack; places from Yelp; per-venue cost + AI plan from OpenRouter (Gemini); logos from Brandfetch.
 
 ## Endpoints
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/api` | `GET` | Flight lookup (FlightRadar24 primary, AviationStack fallback) |
+| `/api` | `GET` | Flight lookup (AviationStack) |
 | `/api/delays` | `GET` | Delayed flights sorted by severity (AviationStack) |
 | `/api/nearby` | `GET` | Yelp-backed POIs with real ratings, open-now, photos |
 | `/api/place-cost` | `GET` | Per-venue USD + visit-duration estimate via OpenRouter |
@@ -20,7 +20,7 @@ Python serverless backend for the **Tarmac** iOS app (flight-delay sightseeing p
 ```
 tarmac-api/
 ├── api/
-│   ├── index.py          # /api — flight search (FR24 + AvStk hybrid)
+│   ├── index.py          # /api — flight search (AviationStack)
 │   ├── delays.py         # /api/delays — delayed flights, sorted
 │   ├── nearby.py         # /api/nearby — Yelp Fusion with parallel open-now diff
 │   ├── place-cost.py     # /api/place-cost — OpenRouter USD + visit-minute estimate
@@ -44,7 +44,6 @@ tarmac-api/
 | `YELP_API_KEY` | `/api/nearby` | [yelp.com/developers](https://www.yelp.com/developers) |
 | `OPENROUTER_API_KEY` | `/api/place-cost`, `/api/plan` | [openrouter.ai](https://openrouter.ai) |
 | `BRANDFETCH_CLIENT_ID` | `/api/brand` | [brandfetch.com](https://brandfetch.com) |
-| `USE_FLIGHTRADAR` | `/api` | `"1"` (default) uses FR24 first; `"0"` forces AviationStack |
 | `OPENROUTER_PRICE_MODEL` | `/api/place-cost` | override default `google/gemini-3.1-flash-lite-preview` |
 | `OPENROUTER_PLAN_MODEL` | `/api/plan` | override default plan model |
 
@@ -70,7 +69,7 @@ curl "https://your-project.vercel.app/api/place-cost?name=Starbucks&category=Cof
 
 ### `GET /api` — Flight lookup
 
-Uses FlightRadar24 via [FlightRadarAPI](https://pypi.org/project/FlightRadarAPI/) when `flight=` is provided, else AviationStack. Responses cached server-side for 5 min.
+Calls AviationStack's `/flights` endpoint, normalizes the payload, and injects airport coordinates + IANA timezones server-side (AviationStack returns naive timestamps with a fake `+00:00` offset). Responses cached server-side for 5 min.
 
 | Param | Description | Example |
 |---|---|---|
@@ -197,7 +196,7 @@ If the aircraft tail isn't published yet (common pre-departure), the endpoint re
 
 ### `GET /api/health` — Status
 
-Returns `{service, status, timestamp, api_key_configured, openrouter_key_configured, yelp_key_configured, flightradar_enabled, endpoints}`. Useful as a Vercel smoke-test and for verifying env-var wiring.
+Returns `{service, status, timestamp, endpoints}` — a one-line description of every route. Useful as a Vercel smoke-test.
 
 ## Xcode Integration
 
@@ -212,7 +211,7 @@ The iOS app calls `/api` for flight lookup, `/api/nearby` for POIs, `/api/place-
 ## Tech Stack
 
 - **Runtime:** Python 3.x
-- **Dependencies:** `requests` (+ `FlightRadarAPI` + `beautifulsoup4` on the frontend-repo mirror for FR24 scraping)
+- **Dependencies:** `requests` only — everything else is stdlib (`http.server`, `urllib`, `json`, `zoneinfo`)
 - **Hosting:** Vercel Serverless Functions (`@vercel/python@4.5.0`, 30s max duration)
 - **Caching:** 5-min in-memory server cache for flight endpoints; 5-min edge cache on `/api/nearby`
 - **LLM:** OpenRouter (default `google/gemini-3.1-flash-lite-preview`)
