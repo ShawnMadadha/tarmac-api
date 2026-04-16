@@ -18,6 +18,12 @@ _DOMAIN_RE = re.compile(r"^[a-z0-9.\-]+$")
 _REFERER = "https://tarmac-api.vercel.app/"
 _USER_AGENT = "Tarmac/1.0 (+https://tarmac-api.vercel.app)"
 
+# When Brandfetch has no logo for a domain it still returns HTTP 200 with a
+# tiny placeholder (transparent pixel, ~300 bytes). Treat anything under this
+# threshold as "no logo" so the iOS client falls back to the SF Symbol.
+# Real brand logos from Brandfetch are ≥ several KB.
+_MIN_LOGO_BYTES = 1024
+
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -47,20 +53,27 @@ class handler(BaseHTTPRequestHandler):
             self._not_found()
             return
 
-        # Brandfetch bounces missing logos to their docs page (text/html). Treat
-        # anything that isn't an image as "no logo available."
+        # Brandfetch bounces missing logos to their docs page (text/html) or returns
+        # a tiny placeholder pixel. Treat anything that isn't a real image as a 404
+        # so the iOS client falls back to its SF Symbol.
         content_type = response.headers.get("Content-Type", "")
-        if response.status_code != 200 or not content_type.startswith("image/"):
+        body = response.content
+        if (
+            response.status_code != 200
+            or not content_type.startswith("image/")
+            or len(body) < _MIN_LOGO_BYTES
+        ):
             self._not_found()
             return
 
         self.send_response(200)
         self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
         # Cache at the edge — logos don't change often and missing ones stay missing.
         self.send_header("Cache-Control", "public, max-age=86400")
         self.end_headers()
-        self.wfile.write(response.content)
+        self.wfile.write(body)
         return
 
     def _not_found(self):
