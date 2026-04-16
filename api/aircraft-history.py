@@ -165,6 +165,22 @@ def _format_leg(f, user_flight_iata=None):
     }
 
 
+def _aircraft_matches(flight_obj, registration, icao24):
+    """True if the given flight is operated by the same aircraft (tail) we're tracking."""
+    aircraft = flight_obj.get("aircraft") or {}
+    if not isinstance(aircraft, dict):
+        return False
+    if registration:
+        their_reg = aircraft.get("registration")
+        if their_reg and their_reg.upper() == registration.upper():
+            return True
+    if icao24:
+        their_icao = aircraft.get("icao24")
+        if their_icao and their_icao.upper() == icao24.upper():
+            return True
+    return False
+
+
 def get_aircraft_history(params):
     flight_iata = (params.get("flight", [None])[0] or "").strip().upper().replace(" ", "")
     if not flight_iata:
@@ -181,6 +197,8 @@ def get_aircraft_history(params):
 
     user_flight = flights[0]
     registration, icao24 = _extract_aircraft_id(user_flight)
+    airline_iata = ((user_flight.get("airline") or {}).get("iata") or "").upper()
+
     if not registration and not icao24:
         return {
             "success": False,
@@ -188,38 +206,51 @@ def get_aircraft_history(params):
                      "try again closer to departure.",
             "user_flight": _format_leg(user_flight, flight_iata),
         }
-
-    # Step 2: pull every flight that aircraft flew today.
-    history_params = {"flight_date": today}
-    if registration:
-        history_params["aircraft_iata"] = registration  # registration filter
-    elif icao24:
-        history_params["aircraft_icao24"] = icao24
-
-    history, err2 = _get("flights", history_params)
-    if err2:
-        # Soft-fail — still return the user's flight as a single-leg timeline so
-        # the UI doesn't crash. Better than a hard error.
+    if not airline_iata:
         return {
-            "success": True,
-            "aircraft_registration": registration,
-            "aircraft_icao24": icao24,
-            "legs": [_format_leg(user_flight, flight_iata)],
-            "warning": err2,
+            "success": False,
+            "error": "Airline code missing from flight record; can't trace the aircraft.",
+            "user_flight": _format_leg(user_flight, flight_iata),
         }
 
-    # Sort chronologically by departure scheduled time
-    legs = list(history or [])
-    if not legs:
-        legs = [user_flight]
+    # Step 2: pull this airline's flights today and filter locally by tail.
+    # AviationStack doesn't support filtering by aircraft registration/ICAO24
+    # directly — `aircraft_iata` matches the aircraft *type* (e.g. B738), not the
+    # specific tail. So we paginate the airline's day and intersect ourselves.
+    matching = []
+    seen_keys = set()  # dedupe by flight_iata + scheduled departure
+    for offset in (0, 100, 200, 300):
+        page, page_err = _get("flights", {
+            "airline_iata": airline_iata,
+            "flight_date": today,
+            "limit": 100,
+            "offset": offset,
+        })
+        if page_err or not page:
+            break
+        for f in page:
+            if not _aircraft_matches(f, registration, icao24):
+                continue
+            key = (
+                ((f.get("flight") or {}).get("iata") or ""),
+                ((f.get("departure") or {}).get("scheduled") or ""),
+            )
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            matching.append(f)
+        if len(page) < 100:
+            break  # reached end of airline's day
 
-    legs.sort(key=lambda f: ((f.get("departure") or {}).get("scheduled") or "0"))
+    if not matching:
+        # Couldn't find any other legs — at least return the user's flight as a
+        # single-leg timeline so the UI shows something useful.
+        matching = [user_flight]
 
-    formatted = [_format_leg(f, flight_iata) for f in legs]
+    matching.sort(key=lambda f: ((f.get("departure") or {}).get("scheduled") or "0"))
+    formatted = [_format_leg(f, flight_iata) for f in matching]
 
-    # Make sure the user's flight appears at least once even if AviationStack's
-    # history query somehow missed it (rare but possible right around scheduling
-    # boundaries).
+    # Defensive: ensure the user's flight is in the timeline at least once.
     if not any(leg["is_user_flight"] for leg in formatted):
         formatted.append(_format_leg(user_flight, flight_iata))
         formatted.sort(key=lambda l: ((l.get("from") or {}).get("scheduled") or "0"))
@@ -228,6 +259,7 @@ def get_aircraft_history(params):
         "success": True,
         "aircraft_registration": registration,
         "aircraft_icao24": icao24,
+        "airline": airline_iata,
         "leg_count": len(formatted),
         "legs": formatted,
     }
