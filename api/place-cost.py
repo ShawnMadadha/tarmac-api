@@ -170,11 +170,10 @@ class handler(BaseHTTPRequestHandler):
                     longitude=longitude,
                 )
                 result = {"success": True, "place": place_name, "estimate": estimate}
-            except requests.exceptions.RequestException as exc:
-                status = getattr(getattr(exc, "response", None), "status_code", "unknown")
-                result = {"success": False, "error": f"Estimation service temporarily unavailable. (debug: status={status})"}
-            except Exception as exc:
-                result = {"success": False, "error": f"Unable to generate estimate. (debug: {type(exc).__name__})"}
+            except requests.exceptions.RequestException:
+                result = {"success": False, "error": "Estimation service temporarily unavailable."}
+            except Exception:
+                result = {"success": False, "error": "Unable to generate estimate."}
 
         self.wfile.write(json.dumps(result, indent=2).encode("utf-8"))
         return
