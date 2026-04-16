@@ -12,6 +12,7 @@ Python serverless backend for the **Tarmac** iOS app (flight-delay sightseeing p
 | `/api/place-cost` | `GET` | Per-venue USD + visit-duration estimate via OpenRouter |
 | `/api/plan` | `POST` | AI-curated 3-stop layover plan via OpenRouter |
 | `/api/brand` | `GET` | Brand logo lookup via Brandfetch |
+| `/api/aircraft-history` | `GET` | Every leg the user's tail aircraft has flown today |
 | `/api/health` | `GET` | Status + env-var check |
 
 ## Project Structure
@@ -25,6 +26,7 @@ tarmac-api/
 │   ├── place-cost.py     # /api/place-cost — OpenRouter USD + visit-minute estimate
 │   ├── plan.py           # /api/plan — AI 3-stop layover planner
 │   ├── brand.py          # /api/brand — Brandfetch logo lookup
+│   ├── aircraft-history.py  # /api/aircraft-history — tail timeline (AvStk)
 │   └── health.py         # /api/health — env + endpoint listing
 ├── vercel.json           # function runtime + CORS headers
 ├── requirements.txt      # runtime dependencies
@@ -38,7 +40,7 @@ tarmac-api/
 
 | Variable | Required for | Notes |
 |---|---|---|
-| `AVIATIONSTACK_API_KEY` | `/api`, `/api/delays` | [aviationstack.com](https://aviationstack.com) |
+| `AVIATIONSTACK_API_KEY` | `/api`, `/api/delays`, `/api/aircraft-history` | [aviationstack.com](https://aviationstack.com) |
 | `YELP_API_KEY` | `/api/nearby` | [yelp.com/developers](https://www.yelp.com/developers) |
 | `OPENROUTER_API_KEY` | `/api/place-cost`, `/api/plan` | [openrouter.ai](https://openrouter.ai) |
 | `BRANDFETCH_CLIENT_ID` | `/api/brand` | [brandfetch.com](https://brandfetch.com) |
@@ -154,6 +156,44 @@ Picks 3 coherent stops from the candidate list against the user's mood, budget, 
 | `domain` | Business website host (e.g. `starbucks.com`) |
 
 Streams back a PNG from Brandfetch's CDN.
+
+### `GET /api/aircraft-history` — Where's-your-plane timeline
+
+Returns the chain of flights the same physical aircraft (tail) has flown today, ordered chronologically, with the user's flight flagged. Powers the "Where's your plane?" UPS-style tracker on the flight confirmation screen so a delayed user can see exactly where their inbound aircraft has been.
+
+Two-step lookup against AviationStack:
+
+1. `GET /flights?flight_iata=X&flight_date=today` — pull the user's flight, extract `aircraft.registration` + `aircraft.icao24` + `airline.iata`.
+2. Paginate `GET /flights?airline_iata=NK&flight_date=today` (offsets 0/100/200/300) and intersect locally by tail. AviationStack's `aircraft_iata` filter only matches aircraft *type* (e.g. `B738`), not the specific registration, so filtering happens server-side here.
+
+| Param | Description | Example |
+|---|---|---|
+| `flight` | IATA flight code | `NK2411` |
+
+**Response:**
+```json
+{
+  "success": true,
+  "aircraft_registration": "N932NK",
+  "aircraft_icao24": "AD775D",
+  "airline": "NK",
+  "leg_count": 2,
+  "legs": [
+    {
+      "flight_iata": "NK2411",
+      "airline": "Spirit Airlines",
+      "status": "active",
+      "from": { "iata": "MCO", "scheduled": "...", "actual": "...", "latitude": 28.43, "longitude": -81.30, "timezone": "America/New_York" },
+      "to":   { "iata": "DTW", "scheduled": "...", "actual": null, "latitude": 42.21, "longitude": -83.35, "timezone": "America/Detroit" },
+      "delay_minutes": 12,
+      "is_user_flight": true
+    },
+    { "flight_iata": "NK752", "from": { "iata": "DTW" }, "to": { "iata": "BOS" }, "status": "scheduled", "is_user_flight": false }
+  ]
+}
+```
+
+If the aircraft tail isn't published yet (common pre-departure), the endpoint returns a friendly error plus the user's flight as a single-leg fallback so the UI still has something to show.
 
 ### `GET /api/health` — Status
 
