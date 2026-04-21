@@ -20,6 +20,7 @@ from urllib.parse import urlparse, parse_qs, urlencode
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 from zoneinfo import ZoneInfo
+from rate_limit import check_rate_limit
 
 AVIATIONSTACK_BASE = "https://api.aviationstack.com/v1"
 
@@ -267,6 +268,9 @@ def get_aircraft_history(params):
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        if check_rate_limit(self):
+            return
+
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")

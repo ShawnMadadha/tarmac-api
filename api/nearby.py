@@ -4,6 +4,7 @@ import json
 import requests
 from urllib.parse import urlparse, parse_qs
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from rate_limit import check_rate_limit
 
 
 # Yelp Fusion category aliases (see https://docs.developer.yelp.com/docs/resources-categories).
@@ -47,6 +48,9 @@ def _yelp_search(session: requests.Session, headers: dict, yelp_categories: str,
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        if check_rate_limit(self):
+            return
+
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
         try:

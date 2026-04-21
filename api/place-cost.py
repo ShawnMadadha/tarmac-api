@@ -4,10 +4,11 @@ import os
 import re
 import requests
 from urllib.parse import urlparse, parse_qs
+from rate_limit import check_rate_limit
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = "google/gemini-3.1-flash-lite-preview"
+DEFAULT_MODEL = "google/gemini-3.1-pro-preview"
 
 
 def _extract_json_object(text):
@@ -21,7 +22,6 @@ def _extract_json_object(text):
     try:
         return json.loads(candidate)
     except json.JSONDecodeError:
-        # Sometimes model output includes trailing commas/newlines; best-effort cleanup.
         candidate = re.sub(r",\s*}", "}", candidate)
         candidate = re.sub(r",\s*]", "]", candidate)
         try:
@@ -43,7 +43,6 @@ def _clamp_visit_minutes(value):
         numeric = int(round(float(value)))
     except (TypeError, ValueError):
         return None
-    # Layover escape: quick stops vs museums; cap at 4h for a single stop guess.
     return min(240, max(5, numeric))
 
 
@@ -138,6 +137,9 @@ def _estimate_place(openrouter_key, model, place_name, category, latitude, longi
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        if check_rate_limit(self, max_requests=20):
+            return
+
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")

@@ -7,14 +7,20 @@ from urllib.error import URLError
 
 AVIATIONSTACK_BASE = "https://api.aviationstack.com/v1"
 
+from fr24_delays import get_delayed_flights_fr24
+from query_cache import annotate_fresh, get_cached, set_cached
+from rate_limit import check_rate_limit
+
+DELAYS_PATH = "/api/delays"
+
 
 def get_api_key():
     return os.environ.get("AVIATIONSTACK_API_KEY", "")
 
 
-def aviationstack_get(endpoint, params):
+def aviationstack_get(endpoint, params, api_key_override=None):
     """Make a GET request to the AviationStack API."""
-    api_key = get_api_key()
+    api_key = api_key_override or get_api_key()
     if not api_key:
         return None, "AVIATIONSTACK_API_KEY not configured"
 
@@ -33,10 +39,10 @@ def aviationstack_get(endpoint, params):
                 msg = err.get("message") or err.get("info") or "AviationStack API error"
                 return None, msg
             return data.get("data", []), None
-    except URLError:
-        return None, "Flight data temporarily unavailable. Please try again."
-    except Exception:
-        return None, "An unexpected error occurred. Please try again."
+    except URLError as e:
+        return None, f"AviationStack request failed: {e}"
+    except Exception as e:
+        return None, str(e)
 
 
 def classify_severity(minutes):
@@ -50,13 +56,10 @@ def classify_severity(minutes):
         return "minor"
 
 
-def get_delayed_flights(params):
+def get_delayed_flights_aviationstack(api_key, params):
     dep_iata = params.get("dep_iata", [None])[0]
     arr_iata = params.get("arr_iata", [None])[0]
-    try:
-        limit = min(int(params.get("limit", ["25"])[0]), 50)
-    except (ValueError, TypeError):
-        limit = 25
+    limit = int(params.get("limit", ["25"])[0])
 
     api_params = {}
     if dep_iata:
@@ -64,7 +67,7 @@ def get_delayed_flights(params):
     if arr_iata:
         api_params["arr_iata"] = arr_iata.strip().upper()
 
-    data, error = aviationstack_get("flights", api_params)
+    data, error = aviationstack_get("flights", api_params, api_key_override=api_key)
     if error:
         return {"success": False, "error": error}
 
@@ -121,11 +124,58 @@ def get_delayed_flights(params):
     delayed.sort(key=lambda x: x["delay"]["max_minutes"], reverse=True)
     delayed = delayed[:limit]
 
-    return {"success": True, "count": len(delayed), "delayed_flights": delayed}
+    return {"success": True, "count": len(delayed), "delayed_flights": delayed, "data_source": "aviationstack"}
+
+
+def get_delayed_flights(params):
+    api_key = get_api_key()
+    return get_delayed_flights_aviationstack(api_key, params)
+
+
+def get_delayed_flights_unified(api_key, params):
+    """
+    Prefer FlightRadar airport boards when dep_iata/arr_iata are set (no API key required).
+    Optional AviationStack when AVIATIONSTACK_API_KEY is set.
+    """
+    cached = get_cached(DELAYS_PATH, params)
+    if cached is not None:
+        return cached
+
+    use_fr = os.environ.get("USE_FLIGHTRADAR", "1").lower() not in ("0", "false", "no")
+    dep = (params.get("dep_iata") or [None])[0]
+    arr = (params.get("arr_iata") or [None])[0]
+
+    if use_fr and (dep or arr):
+        frd = get_delayed_flights_fr24(params)
+        if frd is not None:
+            if frd.get("success"):
+                annotate_fresh(frd)
+                set_cached(DELAYS_PATH, params, frd)
+                return frd
+            annotate_fresh(frd)
+            return frd
+
+    key = (api_key or "").strip()
+    if key:
+        result = get_delayed_flights_aviationstack(key, params)
+        if result.get("success"):
+            annotate_fresh(result)
+            set_cached(DELAYS_PATH, params, result)
+            return result
+        return result
+
+    return {
+        "success": False,
+        "error": "Add ?dep_iata= or ?arr_iata= for FlightRadar delays, or set AVIATIONSTACK_API_KEY for AviationStack.",
+        "data_source": "none",
+    }
 
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        if check_rate_limit(self):
+            return
+
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -133,9 +183,10 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.end_headers()
 
+        api_key = os.environ.get("AVIATIONSTACK_API_KEY", "")
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
-        result = get_delayed_flights(params)
+        result = get_delayed_flights_unified(api_key, params)
 
         self.wfile.write(json.dumps(result, indent=2).encode("utf-8"))
 

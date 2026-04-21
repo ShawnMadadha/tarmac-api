@@ -3,6 +3,7 @@ import os
 import re
 import requests
 from urllib.parse import urlparse, parse_qs
+from rate_limit import check_rate_limit
 
 
 # Permissive domain syntax check: letters, digits, dots, hyphens only.
@@ -27,6 +28,9 @@ _MIN_LOGO_BYTES = 1024
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        if check_rate_limit(self):
+            return
+
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
         domain = (params.get("domain", [""])[0] or "").strip().lower()[:253]

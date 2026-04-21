@@ -3,6 +3,7 @@ import json
 import os
 import re
 import requests
+from rate_limit import check_rate_limit
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -122,7 +123,13 @@ def _validate_plan(parsed, places):
 
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
+        if check_rate_limit(self, max_requests=10):
+            return
+
         length = int(self.headers.get("Content-Length", "0") or 0)
+        if length > 100_000:  # 100 KB max body
+            self._json({"success": False, "error": "Request body too large"}, 413)
+            return
         raw = self.rfile.read(length) if length > 0 else b"{}"
         try:
             body = json.loads(raw.decode("utf-8") or "{}")

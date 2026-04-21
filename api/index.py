@@ -83,6 +83,12 @@ AIRPORT_COORDS = {
     "CMN": (33.3675, -7.5898), "ALG": (36.6910, 3.2154),
 }
 
+from fr24_flights import get_flights_fr24
+from query_cache import annotate_fresh, get_cached, set_cached
+from rate_limit import check_rate_limit
+
+API_PATH = "/api"
+
 
 def get_airport_coords(iata):
     """Return (lat, lon) tuple for an airport IATA code, or (None, None)."""
@@ -95,9 +101,9 @@ def get_api_key():
     return os.environ.get("AVIATIONSTACK_API_KEY", "")
 
 
-def aviationstack_get(endpoint, params):
+def aviationstack_get(endpoint, params, api_key_override=None):
     """Make a GET request to the AviationStack API."""
-    api_key = get_api_key()
+    api_key = api_key_override or get_api_key()
     if not api_key:
         return None, "AVIATIONSTACK_API_KEY not configured"
 
@@ -116,10 +122,10 @@ def aviationstack_get(endpoint, params):
                 msg = err.get("message") or err.get("info") or "AviationStack API error"
                 return None, msg
             return data.get("data", []), None
-    except URLError:
-        return None, "Flight data temporarily unavailable. Please try again."
-    except Exception:
-        return None, "An unexpected error occurred. Please try again."
+    except URLError as e:
+        return None, f"AviationStack request failed: {e}"
+    except Exception as e:
+        return None, str(e)
 
 
 def fix_timezone(time_str, tz_name):
@@ -196,7 +202,6 @@ def format_flight(f):
             "delay_minutes": dep_delay if dep_delay > 0 else None,
             "latitude": get_airport_coords(dep_iata)[0],
             "longitude": get_airport_coords(dep_iata)[1],
-            "timezone": dep_tz,
         },
         "arrival": {
             "airport": arr.get("airport") or "N/A",
@@ -209,20 +214,17 @@ def format_flight(f):
             "delay_minutes": arr_delay if arr_delay > 0 else None,
             "latitude": get_airport_coords(arr_iata)[0],
             "longitude": get_airport_coords(arr_iata)[1],
-            "timezone": arr_tz,
         },
         "is_delayed": (dep_delay > 0) or (arr_delay > 0),
     }
 
 
-def get_flights(params):
+def get_flights_aviationstack(api_key, params):
+    """Fetch flights from AviationStack and return structured JSON."""
     flight_iata = params.get("flight", [None])[0]
     dep_iata = params.get("dep_iata", [None])[0]
     arr_iata = params.get("arr_iata", [None])[0]
-    try:
-        limit = min(int(params.get("limit", ["10"])[0]), 50)
-    except (ValueError, TypeError):
-        limit = 10
+    limit = int(params.get("limit", ["10"])[0])
 
     api_params = {}
 
@@ -239,7 +241,7 @@ def get_flights(params):
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         api_params["flight_date"] = today
 
-    data, error = aviationstack_get("flights", api_params)
+    data, error = aviationstack_get("flights", api_params, api_key_override=api_key)
     if error:
         return {"success": False, "error": error}
 
@@ -253,11 +255,52 @@ def get_flights(params):
     ))
 
     formatted = [format_flight(f) for f in results[:limit]]
-    return {"success": True, "count": len(formatted), "flights": formatted}
+    return {"success": True, "count": len(formatted), "flights": formatted, "data_source": "aviationstack"}
+
+
+def get_flights(params):
+    api_key = get_api_key()
+    return get_flights_aviationstack(api_key, params)
+
+
+def get_flights_unified(api_key, params):
+    """
+    Prefer FlightRadar24 (JeanExtreme002/FlightRadarAPI) for `flight=` queries when enabled;
+    fall back to AviationStack. Responses are cached for 300s (5-minute rule, same cadence as TSA scraping).
+    """
+    cached = get_cached(API_PATH, params)
+    if cached is not None:
+        return cached
+
+    use_fr = os.environ.get("USE_FLIGHTRADAR", "1").lower() not in ("0", "false", "no")
+    flight_param = (params.get("flight") or [None])[0]
+
+    if use_fr and flight_param:
+        fr = get_flights_fr24(params)
+        if fr is not None and fr.get("success") and fr.get("count", 0) > 0:
+            annotate_fresh(fr)
+            set_cached(API_PATH, params, fr)
+            return fr
+
+    if not api_key:
+        return {
+            "success": False,
+            "error": "AVIATIONSTACK_API_KEY not configured. Required when FlightRadar has no live match or for airport-wide queries.",
+        }
+
+    av = get_flights_aviationstack(api_key, params)
+    if av.get("success"):
+        annotate_fresh(av)
+        set_cached(API_PATH, params, av)
+        return av
+    return av
 
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        if check_rate_limit(self):
+            return
+
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -265,9 +308,10 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.end_headers()
 
+        api_key = os.environ.get("AVIATIONSTACK_API_KEY", "")
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
-        result = get_flights(params)
+        result = get_flights_unified(api_key, params)
 
         self.wfile.write(json.dumps(result, indent=2).encode("utf-8"))
 
