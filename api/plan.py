@@ -164,11 +164,11 @@ class handler(BaseHTTPRequestHandler):
             content = _call_openrouter(key, model, prompt)
             parsed = _extract_json_object(content)
             plan = _validate_plan(parsed, places)
-        except requests.exceptions.RequestException:
-            self._json({"success": False, "error": "Plan service temporarily unavailable"}, 502)
+        except requests.exceptions.RequestException as e:
+            self._json({"success": False, "error": f"Plan service error: {e}"}, 502)
             return
-        except Exception:
-            self._json({"success": False, "error": "Unable to generate plan"}, 500)
+        except Exception as e:
+            self._json({"success": False, "error": f"Unable to generate plan: {e}"}, 500)
             return
 
         if not plan:

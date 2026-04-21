@@ -172,10 +172,10 @@ class handler(BaseHTTPRequestHandler):
                     longitude=longitude,
                 )
                 result = {"success": True, "place": place_name, "estimate": estimate}
-            except requests.exceptions.RequestException:
-                result = {"success": False, "error": "Estimation service temporarily unavailable."}
-            except Exception:
-                result = {"success": False, "error": "Unable to generate estimate."}
+            except requests.exceptions.RequestException as e:
+                result = {"success": False, "error": f"Estimation service error: {e}"}
+            except Exception as e:
+                result = {"success": False, "error": f"Unable to generate estimate: {e}"}
 
         self.wfile.write(json.dumps(result, indent=2).encode("utf-8"))
         return
